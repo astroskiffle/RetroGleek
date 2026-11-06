@@ -1,5 +1,8 @@
 # RetroGleek
 
+<img width="1022" height="618" alt="retroGleek" src="https://github.com/user-attachments/assets/cbd7825b-378b-4962-870e-b714883d1ee5" />
+
+
 ## 💾 About
 
 RetroGleek is a specialized, high-compatibility image viewer designed to bridge the gap between forgotten era hardware and modern screens. Drawing architectural and decoding inspiration from WeeGleek and the RECOIL (Retro Computer Image Library) ecosystem, this tool allows you to browse native, non-standard, and proprietary raster formats straight from the golden age of home computing without messy conversions.
