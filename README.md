@@ -4,7 +4,7 @@
 
 RetroGleek is a specialized, high-compatibility image viewer designed to bridge the gap between forgotten era hardware and modern screens. Drawing architectural and decoding inspiration from WeeGleek and the RECOIL (Retro Computer Image Library) ecosystem, this tool allows you to browse native, non-standard, and proprietary raster formats straight from the golden age of home computing without messy conversions.
 
-Whether you're archiving old floppy disk dumps, exploring demoscene art, or reverse-engineering legacy game assets, [Project Name] brings archaic pixel data back to life.
+Whether you're archiving old floppy disk dumps, exploring demoscene art, or reverse-engineering legacy game assets, RetroGleek brings archaic pixel data back to life.
 
 
 ## ✨ Features
