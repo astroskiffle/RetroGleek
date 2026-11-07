@@ -7,7 +7,7 @@ through [RECOIL](https://github.com/pfusik/recoil).
 It builds into **one small `.exe`** using the C# compiler that already ships with Windows: no SDK, no installer,
 no NuGet packages and no internet connection.
 
-<img width="1022" height="618" alt="RetroGleek-4962-870e-b714883d1ee5" src="https://github.com/user-attachments/assets/ebaf4055-2e3d-4d22-996f-3d704c831a2a" />
+<img width="1050" height="608" alt="RetroGleek" src="https://github.com/user-attachments/assets/96f4d426-a907-49c6-9297-dfcaa1c2474e" />
 
 ## Features
 
