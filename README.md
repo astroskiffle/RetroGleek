@@ -1,7 +1,7 @@
 # RetroGleek
 
 
-A small, fast, **fully offline** image browser and viewer for Windows 10/11, with built-in support for
+A small, fast, **fully offline** image browser and viewer for Windows, with built-in support for
 **retro-computer picture formats** (Amiga, Atari, Commodore 64, ZX Spectrum, MSX, Amstrad CPC and hundreds more)
 through [RECOIL](https://github.com/pfusik/recoil).
 
