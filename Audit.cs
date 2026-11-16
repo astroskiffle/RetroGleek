@@ -50,7 +50,7 @@ static class FolderAudit
         foreach (FileInfo fi in new DirectoryInfo(dir).EnumerateFiles())
         {
             if ((fi.Attributes & FileAttributes.Hidden) != 0) continue;
-            if (Util.IsNative(fi.FullName) || Retro.Claims(fi.FullName)) files.Add(fi);
+            if (Util.IsNative(fi.FullName) || WinCodec.Claims(fi.FullName) || Retro.Claims(fi.FullName)) files.Add(fi);
         }
         files.Sort(delegate (FileInfo a, FileInfo b) { return Util.NatCmp(a.Name, b.Name); });
         var list = new List<AuditEntry>();
@@ -78,12 +78,13 @@ static class FolderAudit
     {
         string path = fi.FullName;
         bool native = Util.IsNative(path);
-        bool generic = !native && !Retro.Specific(fi.Extension);
+        bool codec = !native && WinCodec.Claims(path);                       // WebP, HEIC, camera RAW ... (Windows' decoders)
+        bool generic = !native && !codec && !Retro.Specific(fi.Extension);
         var e = new AuditEntry
         {
             Name = fi.Name, Ext = fi.Extension.TrimStart('.').ToUpperInvariant(), Size = fi.Length,
             Modified = (long)(fi.LastWriteTimeUtc - Epoch).TotalMilliseconds,
-            Kind = native ? "Standard" : generic ? "Retro (generic extension)" : "Retro"
+            Kind = native || codec ? "Standard" : generic ? "Retro (generic extension)" : "Retro"
         };
         Mark mk = Marks.Get(path, fi.Length, fi.LastWriteTimeUtc.Ticks);          // ratings, labels and tags
         if (mk != null) { e.Stars = mk.Stars; e.Label = mk.Label; e.Tag = mk.Tag; }
@@ -117,6 +118,21 @@ static class FolderAudit
                     var b = img as Bitmap;
                     if (b != null && (long)e.W * e.H <= MaxColourPixels) e.Colours = CountColours(b);
                 }
+            }
+            else if (codec)
+            {
+                CodecPic c;
+                try { c = WinCodec.Load(path, 0, false); }                     // the whole picture, so damage is caught
+                catch (Exception cex) { throw new IOException(WinCodec.Why(path, cex)); }
+                thumbSrc = c.Bmp;
+                e.W = c.W; e.H = c.H;                                         // as stored (like the other formats)
+                if (c.Rot != 0) thumbSrc.RotateFlip(c.Rot == 1 ? RotateFlipType.Rotate90FlipNone : c.Rot == 2 ? RotateFlipType.Rotate180FlipNone : RotateFlipType.Rotate270FlipNone);
+                e.Platform = "PC (standard image)";
+                e.Frames = c.Frames;
+                e.Format = c.Format;
+                e.FileStars = c.Stars;
+                e.Thumb = Thumb(thumbSrc, thumbs);
+                if ((long)e.W * e.H <= MaxColourPixels) e.Colours = CountColours(thumbSrc);
             }
             else
             {

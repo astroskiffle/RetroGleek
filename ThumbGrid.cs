@@ -606,7 +606,7 @@ sealed class ThumbGrid : Control
     // true when the file's own rating is known (or it can't have one)
     bool RatingKnown(Item it)
     {
-        if (it.Offline || !FileRating.MayHold(it.Path) || IsFailed(it)) return true;
+        if (it.Offline || (!FileRating.MayHold(it.Path) && !WinCodec.Claims(it.Path)) || IsFailed(it)) return true;
         Known k;
         return known.TryGetValue(it.Path, out k) && k.Stamp == it.Stamp;
     }

@@ -632,6 +632,15 @@ sealed class Canvas : Control
                 p.Bytes = size; p.W = p.Img.Width; p.H = p.Img.Height; p.Note = platform; p.Geom = geom;
                 return p;
             }
+            if (WinCodec.Claims(path))                         // WebP, AVIF, HEIC, JPEG XL, camera RAW ... (Windows' own decoders)
+            {
+                CodecPic c;
+                try { c = WinCodec.Load(path, 0, true); }
+                catch (Exception cex) { throw new IOException(WinCodec.Why(path, cex)); }
+                p.Img = c.Bmp; p.W = c.W; p.H = c.H; p.Rot = c.Rot; p.FileStars = c.Stars;
+                p.Bytes = new FileInfo(path).Length;               // Note stays null: Note marks a retro picture
+                return p;
+            }
             byte[] bytes = Util.ReadShared(path);             // one fast sequential read, no lock afterwards
             p.Bytes = bytes.Length;
             ms = new MemoryStream(bytes, false);

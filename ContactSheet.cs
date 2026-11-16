@@ -121,7 +121,7 @@ static class ContactSheet
         Color text = o.Light ? Color.Black : Color.Gainsboro, dim = o.Light ? Color.FromArgb(90, 90, 90) : Color.FromArgb(150, 150, 150);
         string line2 = null;
         int fileStars = 0;
-        Bitmap pic = null;
+        Bitmap pic = null, decoded = null;                                  // decoded: Windows codec or scaled big JPEG
         Image img = null;
         Stream fs = null;
         try
@@ -137,6 +137,16 @@ static class ContactSheet
                 int ow = geom != null && geom.OrigW > 0 ? geom.OrigW : pic.Width, oh = geom != null && geom.OrigH > 0 ? geom.OrigH : pic.Height;
                 line2 = ow + " x " + oh + "  " + (string.IsNullOrEmpty(platform) ? "retro" : platform);
             }
+            else if (WinCodec.Claims(path))
+            {
+                CodecPic c;
+                try { c = WinCodec.Load(path, t, true); }                     // decoded straight to about thumbnail size
+                catch (Exception cex) { throw new IOException(WinCodec.Why(path, cex)); }
+                decoded = c.Bmp; src = decoded; turns = c.Rot;
+                if (o.Marks) fileStars = c.Stars;
+                bool sw = (turns & 1) == 1;
+                line2 = (sw ? c.H : c.W) + " x " + (sw ? c.W : c.H) + "  " + WinCodec.Name(path);
+            }
             else
             {
                 fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1 << 16);
@@ -146,6 +156,11 @@ static class ContactSheet
                 src = img;
                 bool sw = (turns & 1) == 1;
                 line2 = (sw ? img.Height : img.Width) + " x " + (sw ? img.Width : img.Height) + "  " + Path.GetExtension(path).TrimStart('.').ToUpperInvariant();
+                if (JpegRotate.IsJpeg(path) && WinCodec.WorthScaling(img.Width, img.Height, t))
+                {
+                    decoded = WinCodec.ScaledJpeg(path, img.Width, img.Height, t);   // big photo: much quicker
+                    if (decoded != null) src = decoded;
+                }
             }
             int w = src.Width, h = src.Height;
             bool swap = (turns & 1) == 1;
@@ -179,6 +194,7 @@ static class ContactSheet
         finally
         {
             if (pic != null) pic.Dispose();
+            if (decoded != null) decoded.Dispose();
             if (img != null) img.Dispose();
             if (fs != null) fs.Dispose();
         }

@@ -46,6 +46,14 @@ static class Exporter
             long bytes; string platform;
             using (Bitmap src = Retro.Load(path, out bytes, out platform)) bmp = ToArgb(src);
         }
+        else if (WinCodec.Claims(path))
+        {
+            CodecPic c;
+            try { c = WinCodec.Load(path, 0, false); }                       // exact (straight-alpha) pixels
+            catch (Exception cex) { throw new IOException(WinCodec.Why(path, cex)); }
+            bmp = c.Bmp;
+            turns += c.Rot;
+        }
         else
         {
             byte[] data = Util.ReadShared(path);

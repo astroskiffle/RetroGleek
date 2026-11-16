@@ -160,13 +160,33 @@ sealed class ThumbService
             using (Bitmap src = Retro.Load(path, out bytes, out platform))
                 return new ThumbResult { Bmp = Scale(src, 0, size), W = src.Width, H = src.Height, Note = platform };
         }
+        if (WinCodec.Claims(path))                             // decoded straight to thumbnail size by Windows' codec
+        {
+            CodecPic c;
+            try { c = WinCodec.Load(path, size, true); }
+            catch (Exception ex) { return new ThumbResult { Error = WinCodec.Why(path, ex) }; }
+            using (c.Bmp)
+            {
+                bool sw = (c.Rot & 1) == 1;
+                return new ThumbResult { Bmp = Scale(c.Bmp, c.Rot, size), W = sw ? c.H : c.W, H = sw ? c.W : c.H, FileStars = c.Stars };
+            }
+        }
         using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1 << 16))
-        using (Image img = Image.FromStream(fs, false, false))
+        using (Image img = Image.FromStream(fs, false, false))      // reads the header only; pixels are decoded when drawn
         {
             int rot = Util.ReadRotation(img);
             bool swap = (rot & 1) == 1;
+            int stars = FileRating.MayHold(path) ? FileRating.Read(path, img) : 0;
+            Bitmap thumb = null;
+            if (JpegRotate.IsJpeg(path) && WinCodec.WorthScaling(img.Width, img.Height, size))
+                thumb = WinCodec.ScaledJpeg(path, img.Width, img.Height, size);     // big photo: decode at 1/2, 1/4 or 1/8 size
+            if (thumb != null)
+            {
+                using (thumb)
+                    return new ThumbResult { Bmp = Scale(thumb, rot, size), W = swap ? img.Height : img.Width, H = swap ? img.Width : img.Height, FileStars = stars };
+            }
             return new ThumbResult { Bmp = Scale(img, rot, size), W = swap ? img.Height : img.Width, H = swap ? img.Width : img.Height,
-                                     FileStars = FileRating.MayHold(path) ? FileRating.Read(path, img) : 0 };
+                                     FileStars = stars };
         }
     }
 

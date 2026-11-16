@@ -1,4 +1,4 @@
-// RetroGleek - lossless JPEG rotation (Edit > Rotate the file, Ctrl+Shift+R / Ctrl+Shift+L)
+// RetroGleek - lossless JPEG changes: turning the photo (Ctrl+Shift+R / Ctrl+Shift+L) and writing its star rating
 // Copyright (c) 2026 Mark Billson. MIT License (see LICENSE). Part of RetroGleek; see Program.cs for the overview.
 
 using System;
@@ -6,6 +6,8 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Text;
+using System.Xml;
 
 // Turns JPEG photos on disk without re-compressing them, so no quality is lost. Two ways, tried in this order:
 //   1. The photo has an EXIF orientation tag: only that tag's value changes (2 bytes in the file); every viewer that
@@ -208,5 +210,201 @@ static class JpegRotate
         }
         finally { b.UnlockBits(bd); }
         return px;
+    }
+}
+
+// Writes a star rating into a JPEG photo (Edit > Rating > Write my ratings into the JPEGs), so Windows Explorer,
+// Lightroom and other programs see it too. Only the metadata changes; the compressed picture data is copied byte
+// for byte, so nothing is re-compressed:
+//   - XMP: xmp:Rating is set in the photo's XMP block (made if there is none); a MicrosoftPhoto:Rating already there
+//     is updated too. Every other XMP property is kept.
+//   - EXIF: if the photo already has the Windows Rating / RatingPercent tags, their values are changed in place.
+// The new file is written under a temporary name and checked (same picture data, the rating reads back, the photo
+// still decodes) before it replaces the original. A photo whose XMP block can't be read safely is left alone.
+static class JpegRating
+{
+    const string XmpHeader = "http://ns.adobe.com/xap/1.0/\0";
+    const string XmpExtHeader = "http://ns.adobe.com/xmp/extension/\0";
+    const string NsXmp = "http://ns.adobe.com/xap/1.0/";
+    const string NsMsPhoto = "http://ns.microsoft.com/photo/1.0/";
+    const string NsRdf = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
+    static readonly int[] Percent = { 0, 1, 25, 50, 75, 99 };              // Windows' RatingPercent for 0..5 stars
+
+    // stars 0..5 (0 removes the rating). Throws with a readable reason when the photo is left as it was.
+    public static void Write(string path, int stars)
+    {
+        stars = Math.Max(0, Math.Min(5, stars));
+        if (!JpegRotate.IsJpeg(path)) throw new IOException("only JPEG photos can hold a rating written by RetroGleek.");
+        if ((File.GetAttributes(path) & Util.CloudMask) != 0) throw new IOException("cloud-only, not stored on this PC.");
+        if ((File.GetAttributes(path) & FileAttributes.ReadOnly) != 0) throw new IOException("the file is read-only.");
+        byte[] data = File.ReadAllBytes(path);
+        if (data.Length < 4 || data[0] != 0xFF || data[1] != 0xD8) throw new IOException("its JPEG structure could not be read.");
+
+        // the segments before the picture data
+        int p = 2, sos = -1, xmpAt = -1, xmpLen = 0, exifAt = -1, exifLen = 0, app0End = -1;
+        while (p + 4 <= data.Length && data[p] == 0xFF)
+        {
+            int marker = data[p + 1];
+            if (marker == 0xDA) { sos = p; break; }
+            if (marker == 0xD9) break;
+            int len = (data[p + 2] << 8) | data[p + 3];
+            if (len < 2 || p + 2 + len > data.Length) break;
+            if (marker == 0xE1 && Starts(data, p + 4, len - 2, XmpExtHeader))
+                throw new IOException("its XMP block is too large for RetroGleek to change safely (extended XMP).");
+            if (marker == 0xE1 && Starts(data, p + 4, len - 2, XmpHeader)) { if (xmpAt >= 0) throw new IOException("it has more than one XMP block."); xmpAt = p; xmpLen = 2 + len; }
+            else if (marker == 0xE1 && Starts(data, p + 4, len - 2, "Exif\0\0") && exifAt < 0) { exifAt = p; exifLen = 2 + len; }
+            else if (marker == 0xE0 && p == 2) app0End = p + 2 + len;
+            p += 2 + len;
+        }
+        if (sos < 0) throw new IOException("its JPEG structure could not be read.");
+
+        byte[] head = (byte[])data.Clone();
+        if (exifAt >= 0) PatchExif(head, exifAt, exifLen, stars);
+
+        string oldXmp = xmpAt >= 0 ? Encoding.UTF8.GetString(data, xmpAt + 4 + XmpHeader.Length, xmpLen - 4 - XmpHeader.Length) : null;
+        byte[] packet = Encoding.UTF8.GetBytes(NewXmp(oldXmp, stars));
+        byte[] hdr = Encoding.ASCII.GetBytes(XmpHeader);
+        int segLen = 2 + hdr.Length + packet.Length;
+        if (segLen > 65535) throw new IOException("its XMP block would be too large for one JPEG segment.");
+        var seg = new byte[2 + segLen];
+        seg[0] = 0xFF; seg[1] = 0xE1; seg[2] = (byte)(segLen >> 8); seg[3] = (byte)segLen;
+        Buffer.BlockCopy(hdr, 0, seg, 4, hdr.Length);
+        Buffer.BlockCopy(packet, 0, seg, 4 + hdr.Length, packet.Length);
+
+        // the new file: everything before, the XMP segment in its old place (or after EXIF / JFIF), everything after
+        int cutAt, cutLen;
+        if (xmpAt >= 0) { cutAt = xmpAt; cutLen = xmpLen; }
+        else { cutAt = exifAt >= 0 ? exifAt + exifLen : app0End > 0 ? app0End : 2; cutLen = 0; }
+        var outp = new MemoryStream(data.Length + seg.Length);
+        outp.Write(head, 0, cutAt);
+        outp.Write(seg, 0, seg.Length);
+        outp.Write(head, cutAt + cutLen, head.Length - cutAt - cutLen);
+        byte[] result = outp.ToArray();
+
+        string tmp = Path.Combine(Path.GetDirectoryName(path), "~rg" + Guid.NewGuid().ToString("N").Substring(0, 12) + ".tmp");
+        try
+        {
+            File.WriteAllBytes(tmp, result);
+            Check(data, sos, tmp, result.Length - (data.Length - sos), stars);
+            File.Replace(tmp, path, null, true);           // keeps the original's creation date and attributes
+        }
+        finally { try { if (File.Exists(tmp)) File.Delete(tmp); } catch (Exception) { } }
+    }
+
+    static bool Starts(byte[] d, int at, int room, string s)
+    {
+        if (room < s.Length || at + s.Length > d.Length) return false;
+        for (int i = 0; i < s.Length; i++) if (d[at + i] != (byte)s[i]) return false;
+        return true;
+    }
+
+    // the Windows Rating (0x4746) and RatingPercent (0x4749) tags in IFD0, if they are there: new values in place
+    static void PatchExif(byte[] d, int seg, int segLen, int stars)
+    {
+        int t = seg + 10, end = seg + segLen;
+        if (t + 8 > end) return;
+        bool le = d[t] == 'I' && d[t + 1] == 'I';
+        if (!le && !(d[t] == 'M' && d[t + 1] == 'M')) return;
+        long ifd = t + U32(d, t + 4, le);
+        if (ifd < t || ifd + 2 > end) return;
+        int n = U16(d, (int)ifd, le);
+        for (int i = 0; i < n; i++)
+        {
+            int e = (int)ifd + 2 + i * 12;
+            if (e + 12 > end) return;
+            int tag = U16(d, e, le), type = U16(d, e + 2, le);
+            if ((tag != 0x4746 && tag != 0x4749) || type != 3 || U32(d, e + 4, le) != 1) continue;   // SHORT, one value
+            int v = tag == 0x4746 ? stars : Percent[stars];
+            if (le) { d[e + 8] = (byte)v; d[e + 9] = (byte)(v >> 8); } else { d[e + 8] = (byte)(v >> 8); d[e + 9] = (byte)v; }
+        }
+    }
+
+    static int U16(byte[] d, int i, bool le) { return le ? d[i] | (d[i + 1] << 8) : (d[i] << 8) | d[i + 1]; }
+    static uint U32(byte[] d, int i, bool le)
+    {
+        return le ? (uint)(d[i] | (d[i + 1] << 8) | (d[i + 2] << 16) | (d[i + 3] << 24)) : (uint)((d[i] << 24) | (d[i + 1] << 16) | (d[i + 2] << 8) | d[i + 3]);
+    }
+
+    // the XMP packet with the new rating (old = the photo's packet, or null to make one)
+    static string NewXmp(string old, int stars)
+    {
+        if (old == null)
+        {
+            return "<?xpacket begin=\"\uFEFF\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>" +
+                   "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"" + NsRdf + "\">" +
+                   "<rdf:Description rdf:about=\"\" xmlns:xmp=\"" + NsXmp + "\"" + (stars > 0 ? " xmp:Rating=\"" + stars + "\"" : "") + "/>" +
+                   "</rdf:RDF></x:xmpmeta>" + new string(' ', 2048) + "<?xpacket end=\"w\"?>";   // room for other programs to edit in place
+        }
+        var doc = new XmlDocument { PreserveWhitespace = true, XmlResolver = null };
+        var rs = new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null };
+        try
+        {
+            using (var sr = new StringReader(old.TrimEnd('\0')))
+            using (XmlReader xr = XmlReader.Create(sr, rs))
+                doc.Load(xr);
+        }
+        catch (XmlException) { throw new IOException("its XMP block could not be read, so it was left as it was."); }
+        var nm = new XmlNamespaceManager(doc.NameTable);
+        nm.AddNamespace("rdf", NsRdf);
+        XmlNode rdf = doc.SelectSingleNode("//rdf:RDF", nm);
+        if (rdf == null) throw new IOException("its XMP block has an unexpected layout, so it was left as it was.");
+        XmlNodeList descs = rdf.SelectNodes("rdf:Description", nm);
+        bool hadMs = false;
+        foreach (XmlElement d in descs)
+        {
+            foreach (string ns in new[] { NsXmp, NsMsPhoto })
+            {
+                if (d.HasAttribute("Rating", ns)) { if (ns == NsMsPhoto) hadMs = true; d.RemoveAttribute("Rating", ns); }
+                foreach (XmlNode c in new List<XmlNode>(Children(d)))
+                    if (c.NodeType == XmlNodeType.Element && c.LocalName == "Rating" && c.NamespaceURI == ns)
+                    { if (ns == NsMsPhoto) hadMs = true; d.RemoveChild(c); }
+            }
+        }
+        XmlElement target = descs.Count > 0 ? (XmlElement)descs[0] : null;
+        if (target == null)
+        {
+            target = doc.CreateElement("rdf", "Description", NsRdf);
+            target.SetAttribute("about", NsRdf, "");
+            rdf.AppendChild(target);
+        }
+        if (stars > 0)
+        {
+            XmlAttribute a = doc.CreateAttribute("xmp", "Rating", NsXmp);
+            a.Value = stars.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            target.Attributes.Append(a);
+            if (hadMs)
+            {
+                XmlAttribute m = doc.CreateAttribute("MicrosoftPhoto", "Rating", NsMsPhoto);
+                m.Value = Percent[stars].ToString(System.Globalization.CultureInfo.InvariantCulture);
+                target.Attributes.Append(m);
+            }
+        }
+        var ws = new XmlWriterSettings { OmitXmlDeclaration = true, Encoding = new UTF8Encoding(false), Indent = false };
+        var sb = new StringBuilder();
+        using (XmlWriter xw = XmlWriter.Create(sb, ws)) doc.Save(xw);
+        return sb.ToString();
+    }
+
+    static List<XmlNode> Children(XmlNode n)
+    {
+        var r = new List<XmlNode>();
+        foreach (XmlNode c in n.ChildNodes) r.Add(c);
+        return r;
+    }
+
+    // the picture data (from the start-of-scan marker to the end) must be byte for byte the same, the photo must
+    // still decode, and the rating must read back
+    static void Check(byte[] original, int sos, string path, int newSos, int stars)
+    {
+        byte[] d = File.ReadAllBytes(path);
+        int tail = original.Length - sos;
+        if (newSos < 0 || d.Length - newSos != tail) throw new IOException("the new file did not check out, so nothing was changed.");
+        for (int i = 0; i < tail; i++)
+            if (d[newSos + i] != original[sos + i]) throw new IOException("the new file did not check out, so nothing was changed.");
+        using (var ms = new MemoryStream(d, false))
+        using (Image img = Image.FromStream(ms, false, true))               // validates the data
+        {
+            if (FileRating.Read(path, img, true) != stars) throw new IOException("the rating could not be confirmed, so nothing was changed.");
+        }
     }
 }

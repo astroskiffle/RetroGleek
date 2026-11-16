@@ -26,8 +26,8 @@ static class Util
     public static readonly HashSet<string> Exts = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         { ".jpg", ".jpeg", ".jpe", ".jfif", ".png", ".bmp", ".dib", ".gif", ".tif", ".tiff" };
 
-    // native (GDI+) formats are always listed; retro formats only when the user opted in
-    public static bool Listed(string ext) { return Exts.Contains(ext) || Retro.Listable(ext); }
+    // native (GDI+) and Windows-codec formats are always listed; retro formats only when the user opted in
+    public static bool Listed(string ext) { return Exts.Contains(ext) || WinCodec.ClaimsExt(ext) || Retro.Listable(ext); }
     public static bool IsNative(string path) { return Exts.Contains(Path.GetExtension(path)); }
 
     // OFFLINE | RECALL_ON_OPEN | RECALL_ON_DATA_ACCESS: file content lives in the cloud, not on this PC.

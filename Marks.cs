@@ -37,6 +37,10 @@ static class Marks
     static readonly Dictionary<string, Mark> map = new Dictionary<string, Mark>(StringComparer.OrdinalIgnoreCase);
     static readonly object sync = new object();            // the audit reads marks on a worker thread
     static bool loaded;
+    // name + size + date -> marked paths, to find a mark again after Explorer moved or renamed the file's folder
+    static readonly Dictionary<string, List<string>> byFacts = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+    static bool factsDirty = true;
+    public static bool ReadOnly;                            // the command-line audit: marks.tsv is read, never written
 
     // e.g. "\u2605\u2605\u2605" for 3 stars (empty for none)
     public static string StarText(int n) { return n <= 0 ? "" : new string('\u2605', Math.Min(5, n)); }
@@ -54,6 +58,7 @@ static class Marks
     static void LoadLocked()
     {
         loaded = true;
+        factsDirty = true;
         map.Clear();
         foreach (string p in Candidates())
         {
@@ -88,6 +93,8 @@ static class Marks
     // can never leave half a file. Same place rules as settings.ini; never on the network. Never throws.
     static void Save()
     {
+        factsDirty = true;
+        if (ReadOnly) return;
         var sb = new StringBuilder();
         sb.Append("# RetroGleek marks (ratings, colour labels, tags) - path, size, modified, stars, label, tag\r\n");
         var keys = new List<string>(map.Keys);
@@ -124,10 +131,54 @@ static class Marks
         lock (sync)
         {
             Mark m;
-            if (!map.TryGetValue(path, out m)) return null;
+            if (!map.TryGetValue(path, out m) && (m = Adopt(path, size, modified)) == null) return null;
             if (m.Size != size || m.Modified != modified) return null;
             return new Mark { Stars = m.Stars, Label = m.Label, Tag = m.Tag, Size = m.Size, Modified = m.Modified };   // a copy
         }
+    }
+
+    // A picture with no mark of its own: was it moved outside RetroGleek (in Explorer, say)? If a mark belongs to a
+    // file of the same name, size and date that is no longer where it was - on a drive that is still there, so an
+    // unplugged USB stick never loses its marks - the mark moves to this path. A copy never takes a mark (the
+    // original is still there). Under the lock.
+    static Mark Adopt(string path, long size, long modified)
+    {
+        if (map.Count == 0) return null;
+        if (factsDirty)
+        {
+            byFacts.Clear();
+            foreach (KeyValuePair<string, Mark> kv in map)
+            {
+                string key = Facts(kv.Key, kv.Value.Size, kv.Value.Modified);
+                List<string> l;
+                if (!byFacts.TryGetValue(key, out l)) byFacts[key] = l = new List<string>();
+                l.Add(kv.Key);
+            }
+            factsDirty = false;
+        }
+        List<string> cands;
+        if (!byFacts.TryGetValue(Facts(path, size, modified), out cands)) return null;
+        foreach (string old in cands)
+        {
+            try
+            {
+                string root = Path.GetPathRoot(old);
+                if (string.IsNullOrEmpty(root) || !Directory.Exists(root) || File.Exists(old)) continue;
+                if (!File.Exists(path)) return null;
+                Mark m = map[old];
+                map.Remove(old);
+                map[path] = m;
+                Save();
+                return m;
+            }
+            catch (Exception) { }
+        }
+        return null;
+    }
+
+    static string Facts(string path, long size, long modified)
+    {
+        return Path.GetFileName(path) + "|" + size.ToString(CultureInfo.InvariantCulture) + "|" + modified.ToString(CultureInfo.InvariantCulture);
     }
 
     // the mark of a file on disk (reads its size and date), or null
@@ -232,12 +283,15 @@ static class Marks
 }
 
 // The star rating that Windows Explorer, Lightroom and other programs store inside JPEG / TIFF (and some PNG) files:
-// the EXIF Rating tag (0x4746), or else xmp:Rating in the file's XMP block. Read only: RetroGleek never writes it.
+// the EXIF Rating tag (0x4746), or else xmp:Rating in the file's XMP block. RetroGleek writes it only into JPEGs, when asked (JpegRating).
 // Shown in silver wherever RetroGleek shows ratings; a RetroGleek rating of the same picture takes its place.
 static class FileRating
 {
     // img = the decoded picture if there is one (for the EXIF tag); 0 = no rating stored
-    public static int Read(string path, System.Drawing.Image img)
+    public static int Read(string path, System.Drawing.Image img) { return Read(path, img, false); }
+
+    // anyName: read the XMP whatever the file is called (JpegRating checks its temporary file this way)
+    public static int Read(string path, System.Drawing.Image img, bool anyName)
     {
         int r = 0;
         if (img != null)
@@ -252,7 +306,7 @@ static class FileRating
             }
             catch (Exception) { }
         }
-        if (r <= 0 || r > 5) r = Xmp(path);
+        if (r <= 0 || r > 5) r = Xmp(path, anyName);
         return r > 0 && r <= 5 ? r : 0;
     }
 
@@ -263,9 +317,9 @@ static class FileRating
     }
 
     // xmp:Rating="3" or <xmp:Rating>3</xmp:Rating>, looked for in the first 256 KB (where JPEG keeps its XMP)
-    static int Xmp(string path)
+    static int Xmp(string path, bool anyName)
     {
-        if (!MayHold(path)) return 0;
+        if (!anyName && !MayHold(path)) return 0;
         try
         {
             byte[] buf;

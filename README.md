@@ -1,16 +1,8 @@
 # RetroGleek
 
-A small, fast, **fully offline** image browser and viewer for Windows, with built-in support for
+A small, fast, **fully offline** image browser and viewer for Windows 10/11, with built-in support for
 **retro-computer picture formats** (Amiga, Atari, Commodore 64, ZX Spectrum, MSX, Amstrad CPC and hundreds more)
 through [RECOIL](https://github.com/pfusik/recoil).
-
-Most modern image viewers are bloated and lifeless. They stretch vintage art onto sharp 4K monitors, stripping away the soul of the original artwork and leaving behind harsh, raw pixels.
-
-Using advanced video shaders, RetroGleek accurately emulates the iconic quirks of obsolete visual hardware. It automatically replicates scanlines, warm phosphor glow, shadow masks, aperture grilles, and true-to-era color blending based on the image filetype it displays.
-And that’s only half the story.
-RetroGleek was built from the hardware blueprints of 48 distinct retro computer and gaming platforms. From classic CRT monitors to specific cable outputs, it simulates the entire visual signal path showing you your favorite retro images the way they were meant to be seen.
-Stop looking at sterile pixels. Rediscover the authentic glow of retro computing with RetroGleek. RetroGleek will also display modern image filetypes correctly and holds up as a great image viewer too. It won't beat the big commercial  giants in the field on regular images, but it's small, and it's built for complete offline use.
-
 
 It builds into **one small `.exe`** using the C# compiler that already ships with Windows: no SDK, no installer,
 no NuGet packages and no internet connection.
@@ -29,7 +21,9 @@ no NuGet packages and no internet connection.
   folder, and a **slideshow**.
 - **Pixel-art tools** in the viewer: whole-number zoom, a pixel grid, crisp, sharp or smooth enlargement, and a readout of
   the x, y position and colour under the pointer.
-- **Formats.** JPEG, PNG, GIF, BMP and TIFF (Windows GDI+), plus 567 retro file extensions (RECOIL).
+- **Formats.** JPEG, PNG, GIF, BMP and TIFF (Windows GDI+); WebP, AVIF, HEIC, JPEG XL, JPEG XR and camera RAW through
+  the decoders installed in Windows (see [Modern formats](#modern-formats-webp-avif-heic-jpeg-xl-camera-raw)); plus 567
+  retro file extensions (RECOIL).
 - **Save as PNG (lossless).** One picture or a whole selection; every PNG is read back and compared pixel by pixel
   before it is kept.
 - **File management.** Rename, cut / copy / paste, drag-and-drop to move or copy, delete to the Recycle Bin, new folder.
@@ -41,10 +35,10 @@ no NuGet packages and no internet connection.
 
 - **No network code at all.** No sockets, HTTP, telemetry, update checks, licensing or cloud APIs. The program uses
   only the .NET Framework that ships with Windows (`System`, `System.Drawing`, `System.Windows.Forms`,
-  `Microsoft.VisualBasic` for Recycle Bin deletes) plus the bundled `RECOIL.cs`, which is pure C# with no `unsafe`
-  or native code. You can check this yourself: the whole program is a handful of readable C# files plus `RECOIL.cs`.
+  `Microsoft.VisualBasic` for Recycle Bin deletes, `System.Xml`, and WPF's imaging classes, which reach the picture
+  decoders installed in Windows) plus the bundled `RECOIL.cs`, which is pure C# with no `unsafe` or native code. You can check this yourself: the whole program is a handful of readable C# files plus `RECOIL.cs`.
 - **Writes files only when you ask** (save, copy / cut / paste, drag-and-drop, rename, delete, new folder, audit report, a
-  lossless JPEG turn after you confirm it, and
+  lossless JPEG turn or a star rating written into a JPEG after you confirm it, and
   **marks.tsv** when you rate, label or tag a picture), plus one small plain-text **settings.ini** next to `RetroGleek.exe`, written when you close RetroGleek. It remembers the window
   size and position, the folder-tree width, sort order, thumbnail size, details on tiles, retro formats on / off, the
   viewer options (Fit to screen, checkerboard, enlarged pixels, True TV aspect, scanlines, phosphor mask, video signal, glow, curvature, automatic effects, presets, recent copy / move folders, favourite and recent folders, filmstrip, preview pane, info bar, EXIF panel, slideshow interval) and the last
@@ -106,8 +100,9 @@ fullscreen.
 | Back / forward / up one folder | Alt+Left / Alt+Right / Alt+Up (or Backspace), or the buttons |
 | Sort | The **Sort** pull-down (name, date modified, size, type, platform, dimensions, frames, colours, status, rating, label) and its arrow button to reverse; or right-click > Sort by |
 | Details on tiles | Right-click > Show details on tiles; rest the pointer on a tile for a tooltip |
-| Rate, colour-label and tag pictures | `Alt+1` .. `Alt+5` give 1 to 5 stars (`Alt+0` removes the rating); `Shift+1` .. `Shift+5` give a red, yellow, green, blue or purple colour label (`Shift+0` removes it); `X` tags or untags. They work on the selected pictures here, and on the picture shown in the viewer (also during a slideshow); Edit > Rating / Colour label / Tag do the same. Marks show on the thumbnails (stars at the bottom left, a colour strip along the top, a tick for the tag), in the Details list's Rating and Label columns, and in the viewer's info bar. Settings > Move to the next picture after marking makes culling quicker. Marks are kept in `marks.tsv` next to `settings.ini`, never inside the pictures, so they work for every format; they follow pictures you rename or move in RetroGleek (and undo), and a mark stops applying if its file is changed or replaced |
-| Ratings stored in photos | Star ratings that Windows Explorer, Lightroom and other programs store inside JPEG, TIFF and PNG files (the EXIF Rating tag or XMP `xmp:Rating`) are shown too, in silver instead of gold: on the thumbnails, in the Details list, the viewer's info bar ("(in the file)"), the preview pane, the audit report (with a Rating source column in the CSV) and contact sheets. They count for the Show pull-down and for sorting by rating; while you filter or sort by rating, RetroGleek reads them in the background for the rest of the folder. RetroGleek only reads them, never changes the files. Your own rating (Alt+1..5) takes their place; Alt+0 removes yours, and the file's rating shows again |
+| Rate, colour-label and tag pictures | `Alt+1` .. `Alt+5` give 1 to 5 stars (`Alt+0` removes the rating); `Shift+1` .. `Shift+5` give a red, yellow, green, blue or purple colour label (`Shift+0` removes it); `X` tags or untags. They work on the selected pictures here, and on the picture shown in the viewer (also during a slideshow); Edit > Rating / Colour label / Tag do the same. Marks show on the thumbnails (stars at the bottom left, a colour strip along the top, a tick for the tag), in the Details list's Rating and Label columns, and in the viewer's info bar. Settings > Move to the next picture after marking makes culling quicker. Marks are kept in `marks.tsv` next to `settings.ini`, not inside the pictures, so they work for every format (Edit > Rating > Write my ratings into the JPEG files copies your stars into JPEG photos, see below). They follow pictures you rename or move in RetroGleek (and undo), and pictures moved in Explorer (or whose folder was moved or renamed there): a picture with no mark gets the mark of a file with the same name, size and date that is no longer where it was (on a drive that is still connected, so an unplugged USB stick keeps its marks; a copy never takes a mark). A file renamed in Explorer loses its mark (its name no longer matches). A mark stops applying if its file is changed or replaced |
+| Ratings stored in photos | Star ratings that Windows Explorer, Lightroom and other programs store inside JPEG, TIFF and PNG files (the EXIF Rating tag or XMP `xmp:Rating`) are shown too, in silver instead of gold: on the thumbnails, in the Details list, the viewer's info bar ("(in the file)"), the preview pane, the audit report (with a Rating source column in the CSV) and contact sheets. They count for the Show pull-down and for sorting by rating; while you filter or sort by rating, RetroGleek reads them in the background for the rest of the folder. RetroGleek reads them, and changes them only when you ask (next row). Your own rating (Alt+1..5) takes their place; Alt+0 removes yours, and the file's rating shows again |
+| Write ratings into JPEG photos | Edit > Rating > Write my ratings into the JPEG files, on the selected JPEG photos or the photo in the viewer. Copies your RetroGleek star rating into each photo's XMP (`xmp:Rating`, and the Windows EXIF rating tags if the photo already has them), so Windows Explorer, Lightroom and other programs see it. Always asks first, because it changes the files. Only the photo's information block changes; the picture data is copied byte for byte, so no quality is lost and every other XMP property is kept. Each new file is checked (same picture data, the rating reads back) before it replaces the old one. Photos with no RetroGleek rating, other formats, and photos whose XMP block can't be changed safely (extended XMP, unreadable XML) are left alone |
 | Show only marked pictures | The **Show** pull-down next to the filter box (or View > Show): all pictures, tagged / not tagged, 1 to 5 stars or more, no rating, one colour label, or no label. Works together with the name filter. Edit > Select tagged selects the tagged pictures, ready to copy, move, rename, export or delete; Edit > Clear tags in this view removes the tags. Sort by Rating or Label with the Sort pull-down or the column titles. The status bar shows how many pictures are tagged |
 | Rename, Cut, Copy, Paste, Delete (Recycle Bin), Refresh | F2, Ctrl+X, Ctrl+C, Ctrl+V, Del, F5 (or right-click). The open folder also refreshes by itself when files in it are added, changed, renamed or deleted, and keeps your selection. The folder tree updates itself too when folders are created, deleted or renamed (also in Explorer), without closing the folders you have open, and USB sticks / memory cards appear and disappear as you plug them in or out |
 | Turn JPEG photos on disk, without loss | Ctrl+Shift+R (clockwise) / Ctrl+Shift+L (counter-clockwise), or Edit > Turn the file (also 180 degrees), on the selected JPEG photos or the photo in the viewer; in the viewer, File > Save the turn into the JPEG saves the turn you made with R / L. Always asks first, because it changes the files. Nothing is re-compressed, so no quality is lost: a photo with an EXIF orientation tag just gets a new tag value (Windows, browsers and RetroGleek all honour it); one without a tag is turned block by block with Windows' lossless JPEG transform, only when its width and height are whole multiples of the JPEG block size (otherwise it is left alone, with the reason). Each new file is written under a temporary name and checked (the orientation read back, or the picture compared with the original turned) before it replaces the old one. Ratings, labels and tags stay with the photo. Other formats are never changed (Save as PNG keeps a turned copy) |
@@ -214,31 +209,34 @@ for /d %%F in ("D:\Retro\*") do RetroGleek.exe --audit "%%F" --out "D:\Reports\%
 - `RECOIL.cs` is a **modified, machine-generated copy** of RECOIL's C# output (C# 5 syntax, lower memory caps). See
   [`THIRD-PARTY-NOTICES.txt`](THIRD-PARTY-NOTICES.txt). Regenerate it with `tools/downgrade_recoil.py`.
 
-## Why WebP is not supported
+## Modern formats (WebP, AVIF, HEIC, JPEG XL, camera RAW)
 
-RetroGleek sticks to the formats Windows' built-in GDI+ decoder handles (JPEG, PNG, GIF, TIFF, BMP). WebP was
-considered and left out for these reasons:
+RetroGleek opens these through the **decoders installed in Windows** (the Windows Imaging Component, reached through
+WPF's imaging classes in the .NET Framework). It bundles no decoder of its own and adds no native code: the decoders
+are Microsoft's, and Windows Update or the Microsoft Store keeps them patched. Image decoders read untrusted files and
+are a favourite target for attackers (WebP's
+[CVE-2023-4863](https://nvd.nist.gov/vuln/detail/CVE-2023-4863), for example), so a decoder bundled with an app,
+which stays at the version shipped until the app is updated, was ruled out.
 
-* **GDI+ cannot decode WebP.** RetroGleek uses `System.Drawing`, a thin wrapper over the GDI+ component that ships
-  with Windows. GDI+ has no WebP decoder, so supporting WebP would mean adding a second one.
-* **The usual way to add one conflicts with the single-executable design.** Bundling `libwebp` means shipping an
-  extra native DLL or unpacking one at runtime. That breaks the one-file, standalone goal, and unpacking files at
-  runtime can raise antivirus false-positive scores.
-* **Security and patch management.** Image decoders parse untrusted input and are high-value exploit targets.
-  `libwebp` had a heap buffer overflow in 2023 ([CVE-2023-4863](https://nvd.nist.gov/vuln/detail/CVE-2023-4863);
-  rated Critical by Chromium, CVSS 8.8 High in NVD) that was exploited in the wild and fixed in libwebp 1.3.2. A DLL
-  bundled with an app is not serviced by Windows Update: it stays at the version shipped until the maintainer tracks
-  upstream advisories, rebuilds and publishes a release, and users install it.
-* **Native code either way, but a different patch channel.** RetroGleek's own code is C# (memory-safe), but GDI+ is
-  native code too and has had serious parsing bugs, from
-  [MS04-028](https://docs.microsoft.com/en-us/security-updates/securitybulletins/2004/ms04-028) (2004) to
-  [CVE-2025-53766](https://nvd.nist.gov/vuln/detail/CVE-2025-53766) (2025). The difference is servicing: GDI+ is
-  patched through regular Windows updates; a bundled `libwebp` is not.
-* **Alternatives were also considered.** Using a WebP codec installed on the PC (via the Windows Imaging Component)
-  depends on a separately installed native codec that behaves differently across machines. A pure managed decoder
-  would avoid native code, but would be a substantial new component to write, test and maintain.
+| Files | What Windows needs (free unless noted, from the Microsoft Store) |
+|---|---|
+| `.webp` | WebP Image Extensions (already installed on most PCs) |
+| `.avif` | AV1 Video Extension (and HEIF Image Extensions) |
+| `.heic` `.heif` `.hif` | HEIF Image Extensions and HEVC Video Extensions (HEVC is a small paid extension unless the PC came with it) |
+| `.jxl` | JPEG XL Image Extension (Windows 11 24H2 or later) |
+| `.jxr` `.wdp` `.hdp` | Nothing: JPEG XR is built into Windows |
+| Camera RAW (`.dng` `.cr2` `.cr3` `.nef` `.arw` `.orf` `.rw2` `.raf` `.pef` `.srw` and more) | Raw Image Extension |
 
-Other modern codecs (AVIF, HEIC, JPEG XL) are left out for the same reasons.
+These files are always listed. If a PC has no decoder for one, its thumbnail and the viewer say which extension to
+install; RetroGleek never opens the Store or goes online itself. Because the decoders are the PC's own, what opens
+can differ from one PC to another.
+
+Limits: an animated WebP shows its first frame; colour profiles are ignored, as for the other formats; `.raw` and
+`.rwl` stay with RECOIL, which claims those extensions. They can be saved as PNG, put on contact sheets and checked by
+the folder audit like any other picture.
+
+Big JPEG photos get faster thumbnails the same way: Windows' JPEG decoder can decode straight to a half, a quarter or
+an eighth of the full size, so a 50-megapixel photo no longer has to be decoded in full for a 200-pixel thumbnail.
 
 ## Antivirus note
 
@@ -265,7 +263,8 @@ the source and build it yourself with `build.bat`.
 | `ScreenEffects.cs` | Screen effect presets and the automatic choice of effects for each computer |
 | `Marks.cs` | Ratings, colour labels and tags (`marks.tsv`) |
 | `ContactSheet.cs` | Contact sheet: lossless PNG index sheets |
-| `JpegRotate.cs` | Lossless JPEG turn on disk |
+| `JpegRotate.cs` | Lossless JPEG changes: the turn on disk, and writing your rating into the photo |
+| `WinCodecs.cs` | Pictures decoded by Windows' own codecs (WebP, AVIF, HEIC, JPEG XL, camera RAW); fast thumbnails of big JPEGs |
 | `MainForm.cs`, `MainForm.Files.cs` | The main window (one class in two files: layout and browsing; menus, file operations and keys) |
 | `RECOIL.cs` | Bundled, modified C# build of RECOIL (retro formats) |
 | `RetroGleek.manifest` | Windows manifest: high-DPI awareness, Windows 10/11 compatibility |

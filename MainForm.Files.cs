@@ -1115,6 +1115,73 @@ partial class MainForm
         });
     }
 
+    // Edit > Rating > Write my ratings into the JPEG files: your RetroGleek star rating of each JPEG, written into the
+    // photo's XMP (and its Windows EXIF rating tags if it has them) so other programs see it. Changes files: always asks.
+    void WriteRatings()
+    {
+        if (comparing || rotateBusy) return;
+        List<string> paths;
+        if (viewing) { paths = new List<string>(); string p = canvas.CurrentPath; if (p != null) paths.Add(p); }
+        else paths = MarkTargets();
+        var jobs = new List<KeyValuePair<string, int>>();
+        int notJpeg = 0, noRating = 0;
+        foreach (string p in paths)
+        {
+            if (!JpegRotate.IsJpeg(p)) { notJpeg++; continue; }
+            Mark m = Marks.ForFile(p);
+            if (m == null || m.Stars <= 0) { noRating++; continue; }
+            jobs.Add(new KeyValuePair<string, int>(p, m.Stars));
+        }
+        if (jobs.Count == 0)
+        {
+            Warn(notJpeg == paths.Count ? "Ratings can only be written into JPEG photos. For every other format they stay in RetroGleek's marks.tsv."
+                                        : "None of these JPEG photos has a RetroGleek rating to write (give one with Alt+1 .. Alt+5 first).");
+            return;
+        }
+        string what = jobs.Count == 1 ? "\"" + Path.GetFileName(jobs[0].Key) + "\"" : jobs.Count + " JPEG photos";
+        string msg = "Write your star rating into " + what + "?\n\n" +
+                     "This changes " + (jobs.Count == 1 ? "the file" : "the files") + " on disk so Windows Explorer, Lightroom and other programs " +
+                     "see the rating too. Only the photo's information block (XMP) changes; the picture itself is copied byte for byte, " +
+                     "so no quality is lost. Each new file is checked before it replaces the old one." +
+                     (notJpeg > 0 ? "\n\n" + notJpeg + (notJpeg == 1 ? " picture is not a JPEG" : " pictures are not JPEGs") + " and stays as it is." : "") +
+                     (noRating > 0 ? "\n\n" + noRating + (noRating == 1 ? " JPEG has" : " JPEGs have") + " no RetroGleek rating and " + (noRating == 1 ? "is" : "are") + " left alone." : "");
+        if (MessageBox.Show(this, msg, "Write ratings into the files", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+        rotateBusy = true;
+        status.Text = "  Writing ratings into " + what + "...";
+        ThreadPool.QueueUserWorkItem(delegate
+        {
+            int done = 0;
+            var errs = new List<string>();
+            foreach (KeyValuePair<string, int> j in jobs)
+            {
+                try
+                {
+                    var fi = new FileInfo(j.Key);
+                    long oldSize = fi.Length, oldMod = fi.LastWriteTimeUtc.Ticks;
+                    JpegRating.Write(j.Key, j.Value);
+                    Marks.Rebind(j.Key, oldSize, oldMod);           // your marks stay with the photo
+                    done++;
+                }
+                catch (Exception ex) { errs.Add(Path.GetFileName(j.Key) + ": " + Util.Why(ex)); }
+            }
+            int d2 = done;
+            Util.Post(this, delegate { WriteRatingsDone(d2, errs); });
+        });
+    }
+
+    void WriteRatingsDone(int done, List<string> errs)
+    {
+        rotateBusy = false;
+        if (viewing) { canvas.Reload(); if (done > 0) canvas.ShowMessage("Rating written into the file"); }
+        else if (grid.Dir != null) grid.Rescan();
+        status.Text = "  Wrote the rating into " + done + (done == 1 ? " photo" : " photos") + (errs.Count > 0 ? ", " + errs.Count + " left as they were" : "");
+        if (errs.Count > 0)
+        {
+            List<string> e = errs.Count > 8 ? errs.GetRange(0, 8) : errs;
+            Warn((done > 0 ? "Some photos were left as they were:" : "Nothing was written:") + "\n\n" + string.Join("\n", e) + (errs.Count > 8 ? "\n..." : ""));
+        }
+    }
+
     void RotateDone(int done, List<string> errs)
     {
         rotateBusy = false;
@@ -1833,6 +1900,8 @@ partial class MainForm
         ToolStripMenuItem rate = MenuSub(edit, "Rati&ng", canMark);
         for (int ri = 0; ri <= 5; ri++)
             MenuKey(rate, ri == 0 ? "&No rating" : "&" + ri + "  " + Marks.StarText(ri), "Alt+" + ri, Keys.Alt | (Keys)((int)Keys.D0 + ri), null, null);
+        MenuSep(rate);
+        MenuEntry(rate, "&Write my ratings into the JPEG files...", "", delegate { WriteRatings(); }, delegate { return !rotateBusy; }, null);
         ToolStripMenuItem lab = MenuSub(edit, "Colour &label", canMark);
         for (int li = 0; li <= 5; li++)
             MenuKey(lab, "&" + li + "  " + Marks.LabelNames[li], "Shift+" + li, Keys.Shift | (Keys)((int)Keys.D0 + li), null, null);
@@ -2056,7 +2125,12 @@ partial class MainForm
     {
         using (var d = new OpenFileDialog())
         {
-            d.Filter = "Images|*.jpg;*.jpeg;*.jpe;*.jfif;*.png;*.bmp;*.dib;*.gif;*.tif;*.tiff|All files|*.*";
+            var pats = new List<string>();
+            foreach (string x in Util.Exts) pats.Add("*" + x);
+            var more = new List<string>(WinCodec.Exts);
+            more.Sort(StringComparer.OrdinalIgnoreCase);
+            foreach (string x in more) pats.Add("*" + x);
+            d.Filter = "Images|" + string.Join(";", pats.ToArray()) + "|All files|*.*";
             if (grid.Dir != null) d.InitialDirectory = grid.Dir;
             if (d.ShowDialog(this) == DialogResult.OK) OpenImage(d.FileName);
         }

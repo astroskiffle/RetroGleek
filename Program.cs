@@ -1,8 +1,9 @@
 // RetroGleek - a tiny, 100% offline image browser + viewer for Windows 11.
 // Copyright (c) 2026 Mark Billson. MIT License (see LICENSE).
 //
-// Uses ONLY the .NET Framework that ships with Windows (System, System.Drawing,
-// System.Windows.Forms, Microsoft.VisualBasic for Recycle Bin deletes), plus RECOIL.cs, a bundled
+// Uses ONLY the .NET Framework that ships with Windows (System, System.Drawing, System.Windows.Forms,
+// Microsoft.VisualBasic for Recycle Bin deletes, System.Xml, and WPF's imaging classes for the picture decoders
+// installed in Windows: WebP, AVIF, HEIC, JPEG XL, JPEG XR, camera RAW), plus RECOIL.cs, a bundled
 // managed C# library for retro pictures. There is no networking code in this file or in RECOIL.cs:
 // no sockets, no HTTP, no telemetry, no licensing, no cloud APIs.
 // Cloud "placeholder" files (OneDrive etc. that are not stored on this PC) are never opened,
@@ -89,7 +90,9 @@
 //   Settings.cs        remembered settings (settings.ini)
 //   Audit.cs           folder audit: offline HTML report of every picture file in one folder
 //   ScreenEffects.cs   screen effect sets: presets (Ctrl+1..9) and the automatic choice for each computer (A)
-//   JpegRotate.cs      lossless JPEG turn on disk (orientation tag, or GDI+'s lossless transform), checked first
+//   JpegRotate.cs      lossless JPEG changes, checked first: the turn on disk (orientation tag, or GDI+'s lossless
+//                      transform) and writing your star rating into the photo's XMP
+//   WinCodecs.cs       pictures decoded by Windows' own codecs (WebP, AVIF, HEIC, JPEG XL, RAW ...); fast big-JPEG thumbnails
 //   ContactSheet.cs    contact sheet: lossless PNG index sheets of the selection (Tools menu)
 //   Marks.cs           ratings, colour labels and tags (marks.tsv next to settings.ini; never inside the pictures)
 //   RECOIL.cs          generated RECOIL library (never edit by hand; see tools/downgrade_recoil.py)
@@ -117,8 +120,8 @@ using WinTimer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("RetroGleek")]
 [assembly: AssemblyCompany("Mark Billson")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 Mark Billson. MIT License.")]
-[assembly: AssemblyVersion("1.1.0.0")]
-[assembly: AssemblyFileVersion("1.1.0.0")]
+[assembly: AssemblyVersion("1.2.0.0")]
+[assembly: AssemblyFileVersion("1.2.0.0")]
 
 static class Program
 {
@@ -237,7 +240,8 @@ static class Program
             if (!Directory.Exists(Path.GetDirectoryName(dest))) return Fail(errw, "The folder for the report does not exist: " + Path.GetDirectoryName(dest));
             if (File.Exists(dest) && !overwrite) return Fail(errw, "The report already exists (add --overwrite to replace it): " + dest);
 
-            Marks.Load();                                    // read only: the report shows your ratings, labels and tags
+            Marks.ReadOnly = true;                           // read only: the report shows your ratings, labels and tags
+            Marks.Load();
             bool live = errw != null && !quiet && !ErrRedirected();
             Action<int, int, string> progress = null;
             if (live)
