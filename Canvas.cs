@@ -488,8 +488,29 @@ sealed class Canvas : Control
         idx = i;
         want = files[i];
         Pic p;
-        if (cache.TryGetValue(want, out p)) Display(p); else Request(want);
+        bool have = cache.TryGetValue(want, out p);
+        if (have && p.Stamp != FileStamp(want))            // replaced, changed or re-made since it was read: read it again
+        {
+            cache.Remove(want);
+            if (p == cur) { StopAnim(); cur = null; DropSharp(); DropFx(); DropComposite(); DropGlow(); }
+            p.Dispose();
+            stripStamps.Remove(want);
+            have = false;
+        }
+        if (have) Display(p); else Request(want);
         Prefetch();
+    }
+
+    // the file's size and modified time in one number (0 if it is not there); kept with each decoded picture, so a
+    // file that was deleted and made again under the same name (a new conversion, say) is never shown from memory
+    static long FileStamp(string path)
+    {
+        try
+        {
+            var fi = new FileInfo(path);
+            return fi.Exists ? fi.LastWriteTimeUtc.Ticks ^ (fi.Length * 1000003L) : 0;
+        }
+        catch (Exception) { return 0; }
     }
 
     void Prefetch()
@@ -525,6 +546,13 @@ sealed class Canvas : Control
     {
         pending.Remove(p.FullPath);
         if (!IsNear(p.FullPath) || cache.ContainsKey(p.FullPath)) { p.Dispose(); return; }
+        if (p.Stamp != FileStamp(p.FullPath))              // the file changed while it was being read: read it again
+        {
+            string again = p.FullPath;
+            p.Dispose();
+            Request(again);                                 // stops by itself once the file stays the same
+            return;
+        }
         cache[p.FullPath] = p;
         if (string.Equals(p.FullPath, want, StringComparison.OrdinalIgnoreCase)) Display(p);
     }
@@ -536,6 +564,14 @@ sealed class Canvas : Control
     void StartAnim(Pic p)
     {
         frame = 0; frameCount = 0; animPaused = false;
+        if (p.Frames != null)                              // animated WebP: frames already put together, delays in ms
+        {
+            frameCount = p.Frames.Count;
+            frameDelays = (int[])p.Delays.Clone();
+            p.Img = p.Frames[0];
+            if (frameCount > 1) ScheduleFrame();
+            return;
+        }
         try
         {
             frameCount = p.Img.GetFrameCount(FrameDimension.Time);
@@ -565,13 +601,14 @@ sealed class Canvas : Control
     {
         if (!AnimActive) return;
         frame = ((f % frameCount) + frameCount) % frameCount;
-        try { cur.Img.SelectActiveFrame(FrameDimension.Time, frame); } catch (Exception) { }
+        if (cur.Frames != null) { if (frame < cur.Frames.Count) cur.Img = cur.Frames[frame]; }   // animated WebP: show that frame
+        else try { cur.Img.SelectActiveFrame(FrameDimension.Time, frame); } catch (Exception) { }
         Invalidate();
     }
 
     void ToggleAnimPause()
     {
-        if (!AnimActive) { Flash("This picture is not animated"); return; }
+        if (!AnimActive) { Flash("This picture is not animated"); return; }   // animated GIF or WebP
         animPaused = !animPaused;
         if (animPaused) animTimer.Stop(); else ScheduleFrame();
         Flash(animPaused ? "Animation paused   (, and . step one frame)" : "Animation playing");
@@ -618,7 +655,7 @@ sealed class Canvas : Control
     // runs on worker threads
     static Pic Decode(string path)
     {
-        var p = new Pic { FullPath = path };
+        var p = new Pic { FullPath = path, Stamp = FileStamp(path) };   // taken before reading, so a change during it shows
         Image img = null; MemoryStream ms = null;
         try
         {
@@ -634,6 +671,19 @@ sealed class Canvas : Control
             }
             if (WinCodec.Claims(path))                         // WebP, AVIF, HEIC, JPEG XL, camera RAW ... (Windows' own decoders)
             {
+                if (WebpAnim.IsWebp(path))                     // an animated WebP: every frame, played on the GIF clock
+                {
+                    List<Bitmap> frames = null;
+                    int[] delays;
+                    long size;
+                    try { if (!WebpAnim.TryLoad(path, out frames, out delays, out size)) frames = null; else { p.Delays = delays; p.Bytes = size; } }
+                    catch (Exception) { frames = null; }      // a damaged animation: the still decoder below says why
+                    if (frames != null)
+                    {
+                        p.Frames = frames; p.Img = frames[0]; p.W = frames[0].Width; p.H = frames[0].Height; p.Anim = true;
+                        return p;
+                    }
+                }
                 CodecPic c;
                 try { c = WinCodec.Load(path, 0, true); }
                 catch (Exception cex) { throw new IOException(WinCodec.Why(path, cex)); }

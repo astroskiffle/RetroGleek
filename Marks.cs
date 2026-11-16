@@ -335,7 +335,7 @@ static class Marks
 }
 
 // The star rating that Windows Explorer, Lightroom and other programs store inside JPEG / TIFF (and some PNG) files:
-// the EXIF Rating tag (0x4746), or else xmp:Rating in the file's XMP block. RetroGleek writes it only into JPEGs, when asked (JpegRating).
+// the EXIF Rating tag (0x4746), or else xmp:Rating in the file's XMP block. RetroGleek writes it only into JPEG and PNG files, when asked (RatingWriter).
 // Shown in silver wherever RetroGleek shows ratings; a RetroGleek rating of the same picture takes its place.
 static class FileRating
 {

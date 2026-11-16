@@ -7,7 +7,8 @@
 // managed C# library for retro pictures. There is no networking code in this file or in RECOIL.cs:
 // no sockets, no HTTP, no telemetry, no licensing, no cloud APIs.
 // Cloud "placeholder" files (OneDrive etc. that are not stored on this PC) are never opened,
-// so browsing can't trigger a download.
+// so browsing can't trigger a download. Copying a folder leaves the cloud-only files inside it out (and says how
+// many); moving a folder that holds some to another drive asks first, because Windows would download them.
 //
 // BROWSE MODE (folder tree | thumbnails)
 //   Click folder in the tree          show its images (lazy-loaded, scanned on background threads)
@@ -18,20 +19,25 @@
 //   Drag with the mouse               rubber-band select (Ctrl adds); a drag that starts on a SELECTED picture
 //                                     moves / copies the selection onto a tree folder or into Explorer
 //   Ctrl+X then Ctrl+V                cut and paste = move (Explorer-compatible)
+//   Ctrl+Shift+Y / Ctrl+Shift+M       copy / move the selection to a folder (Edit > Copy to / Move to: the last 8)
 //   Ctrl+Shift+F / Subfolders switch  also list the pictures of every folder below this one
+//   Ctrl+Shift+D / Details button     details list with sortable columns (instead of thumbnails)
+//   Ctrl+Shift+C                      compare the 2 selected pictures side by side (zoom / pan linked)
 //   Ctrl+F2                           batch rename the selection (pattern, preview)
 //   Ctrl+Z                            undo the last rename, batch rename or move (20 steps, while running)
-//   Ctrl+Shift+S                      every frame of an animated GIF / page of a TIFF as separate lossless PNGs
+//   Ctrl+Shift+S                      every frame of an animated GIF or WebP / page of a TIFF as separate lossless PNGs
 //   Ctrl+Shift+A                      folder audit report (HTML): platforms, types, failures, duplicates
+//   Ctrl+Shift+R / Ctrl+Shift+L       turn the selected JPEG photos on disk, without loss (asks first)
+//   Ctrl+Shift+E                      convert the selection to a retro format (Spectrum .scr, C64 .koa/.dd, CPC .scr, ST .pi1, Amiga .iff, MSX .sc2/.sc8);
+//                                     new files, each checked by RECOIL
 //   Alt+0..5 / Shift+0..5 / X         rating / colour label / tag (browser and viewer); Show pull-down filters by them
+//   Edit > Rating > Write my ratings into the files   copies your stars into JPEG / PNG files (XMP; asks first)
+//   The open folder refreshes by itself when its files change (FileSystemWatcher, local drives only);
+//   the folder tree updates itself when folders change, and when a USB stick / card is plugged in or out
 //
 // COMMAND LINE AUDIT (no window):  RetroGleek.exe --audit <folder> [--out <file>] [--no-thumbs] [--csv] [--overwrite]
 //   or the console companion, with progress and a summary:  RetroGleekCli.exe <folder> [same options] [--quiet]
 //   exit code 0 = all opened, 1 = some could not be opened, 2 = error
-//   Ctrl+Shift+D / Details button     details list with sortable columns (instead of thumbnails)
-//   Ctrl+Shift+C                      compare the 2 selected pictures side by side (zoom / pan linked)
-//   The open folder refreshes by itself when its files change (FileSystemWatcher, local drives only);
-//   the folder tree updates itself when folders change, and when a USB stick / card is plugged in or out
 //
 // VIEW MODE (full canvas)
 //   Left / Right, PgUp / PgDn, Space / Backspace, Mouse wheel   previous / next image (wraps)
@@ -69,7 +75,7 @@
 //   S slideshow (Up / Down = interval; S or Esc stops)    2..9 = 200%..900% zoom    + / - = whole-number steps above 100%
 //   J filmstrip    Z (hold) loupe    G pixel grid (at 800% and above)    N crisp / sharp / smooth enlargement    the info bar shows x, y and colour under the pointer
 //   H / V flip left-right / top-bottom    B checkerboard behind transparency    Ctrl+C copy the picture    Del Recycle Bin
-//   E EXIF details    P pause / play an animated GIF    , / . previous / next frame
+//   E EXIF details (JPEG, TIFF, and HEIC / AVIF / RAW ... through Windows' decoders)    P pause / play an animated GIF or WebP    , / . previous / next frame
 //   T True TV aspect (pixel shape of the original screen)    K scanlines    M phosphor mask    C RGB / S-Video / composite signal    W glow    U curvature
 //   O all screen effects off / on    A automatic effects for each computer    Ctrl+1..9 presets (Effects menu; display only)
 //
@@ -77,7 +83,7 @@
 //
 // SOURCE FILES (all next to build.bat, which lists each of them; add any new file there too)
 //   Program.cs         this overview, version info, Main
-//   Util.cs            shared helpers
+//   Util.cs            shared helpers (incl. copying a folder without its cloud-only files)
 //   Imaging.cs         Exporter (lossless PNG), Retro (RECOIL wrapper), Pic
 //   Thumbnails.cs      Item, ThumbJob, ThumbResult, ThumbCache, ThumbService
 //   Controls.cs        Prompt, WheelRouter, Gfx, DarkColors, DarkMenuRenderer, DarkCombo, DarkSlider
@@ -90,11 +96,16 @@
 //   Settings.cs        remembered settings (settings.ini)
 //   Audit.cs           folder audit: offline HTML report of every picture file in one folder
 //   ScreenEffects.cs   screen effect sets: presets (Ctrl+1..9) and the automatic choice for each computer (A)
-//   JpegRotate.cs      lossless JPEG changes, checked first: the turn on disk (orientation tag, or GDI+'s lossless
-//                      transform) and writing your star rating into the photo's XMP
-//   WinCodecs.cs       pictures decoded by Windows' own codecs (WebP, AVIF, HEIC, JPEG XL, RAW ...); fast big-JPEG thumbnails
+//   JpegRotate.cs      lossless changes to photo files, checked first: the JPEG turn on disk (orientation tag, or
+//                      GDI+'s lossless transform), and writing your star rating into JPEG and PNG files (XMP)
+//   WinCodecs.cs       pictures decoded by Windows' own codecs (WebP, AVIF, HEIC, JPEG XL, RAW ...) and their EXIF
+//                      details; animated WebP frames (WebpAnim); fast big-JPEG thumbnails
 //   ContactSheet.cs    contact sheet: lossless PNG index sheets of the selection (Tools menu)
-//   Marks.cs           ratings, colour labels and tags (marks.tsv next to settings.ini; never inside the pictures)
+//   Marks.cs           ratings, colour labels and tags (marks.tsv next to settings.ini; never inside the pictures);
+//                      found again after a file or its folder is moved or renamed in Explorer
+//   RetroConvert.cs    converting pictures into retro formats (Spectrum .scr, C64 Koala .koa and Doodle .dd,
+//                      Amstrad CPC .scr mode 0 and 1, Atari ST Degas .pi1, Amiga IFF .iff, MSX Screen 2 .sc2 and
+//                      Screen 8 .sc8), every file checked by RECOIL
 //   RECOIL.cs          generated RECOIL library (never edit by hand; see tools/downgrade_recoil.py)
 
 using System;

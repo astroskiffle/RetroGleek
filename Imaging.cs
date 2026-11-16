@@ -106,16 +106,44 @@ static class Exporter
         return px;
     }
 
-    // Every frame of an animated GIF / every page of a multi-page TIFF, each as its own verified lossless PNG in
-    // destDir (stem_frame001.png ...; existing files are never overwritten). Frames are saved as they are shown:
-    // GDI+ hands over each GIF frame already combined with the frames before it. Rotation and mirroring are applied
-    // as in Decode. Runs on a worker thread. Returns the number of frames saved, or 0 if the picture has only one.
+    // Every frame of an animated GIF or WebP / every page of a multi-page TIFF, each as its own verified lossless PNG
+    // in destDir (stem_frame001.png ...; existing files are never overwritten). Frames are saved as they are shown:
+    // GDI+ hands over each GIF frame already combined with the frames before it, and WebpAnim puts WebP frames
+    // together the same way. Rotation and mirroring are applied as in Decode. Runs on a worker thread. Returns the
+    // number of frames saved, or 0 if the picture has only one.
     public static int ExportFrames(string path, int extraTurns, bool flipX, bool flipY, string destDir,
                                    Action<int, int> progress, out string firstFile)
     {
         firstFile = null;
         if ((File.GetAttributes(path) & Util.CloudMask) != 0)
             throw new IOException("This file is a cloud placeholder that isn't stored on this PC.");
+        if (WebpAnim.IsWebp(path))
+        {
+            List<Bitmap> frames;
+            int[] delays;
+            long size;
+            if (!WebpAnim.TryLoad(path, out frames, out delays, out size)) return 0;   // a still WebP (or too big to animate)
+            try
+            {
+                int webpTurns = extraTurns & 3;
+                string webpStem = Path.GetFileNameWithoutExtension(path) + "_frame";
+                int webpDigits = Math.Max(3, frames.Count.ToString().Length);
+                for (int i = 0; i < frames.Count; i++)
+                {
+                    if (progress != null) progress(i + 1, frames.Count);
+                    Bitmap fb = frames[i];
+                    if (flipX || flipY)
+                        fb.RotateFlip(flipX && flipY ? RotateFlipType.RotateNoneFlipXY : flipX ? RotateFlipType.RotateNoneFlipX : RotateFlipType.RotateNoneFlipY);
+                    if (webpTurns != 0)
+                        fb.RotateFlip(webpTurns == 1 ? RotateFlipType.Rotate90FlipNone : webpTurns == 2 ? RotateFlipType.Rotate180FlipNone : RotateFlipType.Rotate270FlipNone);
+                    string fdest = Util.UniquePath(destDir, webpStem + (i + 1).ToString().PadLeft(webpDigits, '0'), ".png");
+                    SavePng(fb, fdest, false);
+                    if (firstFile == null) firstFile = fdest;
+                }
+                return frames.Count;
+            }
+            finally { foreach (Bitmap fb in frames) fb.Dispose(); }
+        }
         if (!Util.IsNative(path)) return 0;                // retro pictures: flicker frames are blended into one picture
         byte[] data = Util.ReadShared(path);
         using (var ms = new MemoryStream(data, false))
@@ -410,15 +438,20 @@ sealed class Pic : IDisposable
     public int W, H, Rot;        // Rot = quarter turns needed to honour EXIF orientation
     public long Bytes;
     public bool Anim;
+    public List<Bitmap> Frames;  // animated WebP: every frame, put together (Img is the one shown); null otherwise
+    public int[] Delays;         // animated WebP: each frame's time on screen, in milliseconds
     public string Err;
     public string Note;          // e.g. the retro platform name
     public RetroGeom Geom;       // retro pictures only: original resolution and pixel density
     public List<string> Exif;    // readable EXIF lines (camera, exposure ...), or null
     public int FileStars;        // star rating stored in the file (Windows, Lightroom ...), 0 = none
+    public long Stamp;           // the file's size and modified time when it was read (Canvas.FileStamp): a kept copy is
+                                 // shown again only while the file is unchanged
 
     public void Dispose()
     {
-        if (Img != null) Img.Dispose();
+        if (Frames != null) { foreach (Bitmap b in Frames) b.Dispose(); Frames = null; }   // Img is one of them
+        else if (Img != null) Img.Dispose();
         if (Ms != null) Ms.Dispose();
         Img = null; Ms = null;
     }

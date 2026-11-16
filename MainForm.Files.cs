@@ -1180,6 +1180,132 @@ partial class MainForm
         }
     }
 
+    // ---------------------------------------------------------------- converting to a retro format (new files only)
+
+    bool convertBusy;
+
+    // Ctrl+Shift+E / Tools > Convert to a retro format: the selected pictures (browser) or the picture shown (viewer)
+    // become new files in a retro format (RetroConvert). The originals are never changed; nothing is overwritten.
+    void DoConvert()
+    {
+        if (comparing || convertBusy) return;
+        var paths = new List<string>();
+        if (viewing) { string p = canvas.CurrentPath; if (p != null && File.Exists(p)) paths.Add(p); }
+        else foreach (int i in grid.SelectedIndices()) if (!grid.Items[i].Offline) paths.Add(grid.Items[i].Path);
+        if (paths.Count == 0) { Warn("Select the pictures to convert first (Ctrl+A selects them all)."); return; }
+        ConvertOptions o = RetroConvert.Ask(this, paths, Path.GetDirectoryName(paths[0]), DarkTitle);
+        if (o == null) return;
+        string why = RefuseSource(o.DestDir);                // local drives only, as for every other file operation
+        if (why != null) { Warn("RetroGleek can't save there: " + why); return; }
+        convertBusy = true;
+        status.Text = "  Converting " + paths.Count + (paths.Count == 1 ? " picture" : " pictures") + "...";
+        if (viewing) canvas.ShowMessage("Converting...");
+        ThreadPool.QueueUserWorkItem(delegate
+        {
+            int done = 0, k = 0;
+            string last = null;
+            var errs = new List<string>();
+            foreach (string p in paths)
+            {
+                k++;
+                int kk = k;
+                Util.Post(this, delegate { status.Text = "  Converting " + kk + " of " + paths.Count + "..."; });
+                try { last = RetroConvert.ConvertFile(p, o); done++; }
+                catch (Exception ex) { errs.Add(Path.GetFileName(p) + ": " + Util.Why(ex)); }
+            }
+            int d2 = done;
+            string l2 = last;
+            Util.Post(this, delegate { ConvertDone(d2, paths.Count, l2, o.DestDir, errs); });
+        });
+    }
+
+    void ConvertDone(int done, int total, string last, string destDir, List<string> errs)
+    {
+        convertBusy = false;
+        status.Text = "  Converted " + done + " of " + total + (total == 1 ? " picture" : " pictures") + "   |   " + destDir;
+        if (viewing) canvas.ShowMessage(done > 0 ? "Converted: " + Path.GetFileName(last) : "Nothing was converted");
+        else if (done > 0 && grid.Covers(destDir)) grid.Rescan();
+        if (errs.Count > 0)
+        {
+            List<string> e = errs.Count > 8 ? errs.GetRange(0, 8) : errs;
+            Warn((done > 0 ? "Some pictures could not be converted:" : "Nothing was converted:") + "\n\n" + string.Join("\n", e) + (errs.Count > 8 ? "\n..." : ""));
+        }
+    }
+
+    // ---------------------------------------------------------------- star ratings into the files (changes files, always asks)
+
+    bool ratingBusy;
+
+    // Edit > Rating > Write my ratings into the files: your RetroGleek star rating is copied into the selected JPEG
+    // and PNG files (browser) or the picture shown (viewer), so other programs see it. Pictures without a RetroGleek
+    // rating, and other formats, are left alone. Marks stay with the files (their size and date change).
+    void WriteRatingsToFiles()
+    {
+        if (comparing || ratingBusy) return;
+        var paths = new List<string>();
+        if (viewing) { string p = canvas.CurrentPath; if (p != null) paths.Add(p); }
+        else foreach (int i in grid.SelectedIndices()) if (!grid.Items[i].Offline) paths.Add(grid.Items[i].Path);
+        if (paths.Count == 0) return;
+        var jobs = new List<KeyValuePair<string, int>>();
+        int unrated = 0, otherFormat = 0;
+        foreach (string p in paths)
+        {
+            if (!RatingWriter.CanWrite(p)) { otherFormat++; continue; }
+            Mark m = Marks.ForFile(p);
+            if (m == null || m.Stars == 0) { unrated++; continue; }
+            jobs.Add(new KeyValuePair<string, int>(p, m.Stars));
+        }
+        string left = (unrated > 0 ? "\n\n" + unrated + (unrated == 1 ? " picture has" : " pictures have") + " no RetroGleek rating and " + (unrated == 1 ? "is" : "are") + " left alone." : "") +
+                      (otherFormat > 0 ? "\n\n" + otherFormat + (otherFormat == 1 ? " picture is" : " pictures are") + " not JPEG or PNG and " + (otherFormat == 1 ? "is" : "are") + " left alone." : "");
+        if (jobs.Count == 0)
+        {
+            Warn("There is nothing to write: ratings are written into JPEG and PNG files that you have rated in RetroGleek (Alt+1 .. Alt+5)." + left);
+            return;
+        }
+        string what = jobs.Count == 1 ? "\"" + Path.GetFileName(jobs[0].Key) + "\" (" + Marks.Describe(new Mark { Stars = jobs[0].Value }) + ")" : jobs.Count + " pictures";
+        string msg = "Write your star rating into " + what + "?\n\n" +
+                     "This changes " + (jobs.Count == 1 ? "the file" : "the files") + " on disk, so Windows Explorer, Lightroom and other programs can see the rating. " +
+                     "Only the information block changes (XMP, and the Windows rating tags if there are any); the picture data is copied byte for byte, " +
+                     "so no quality is lost. Each new file is checked before it replaces the old one. Colour labels and tags stay in RetroGleek only." + left;
+        if (MessageBox.Show(this, msg, "Write ratings into the files", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+        ratingBusy = true;
+        status.Text = "  Writing ratings into " + what + "...";
+        if (viewing) canvas.ShowMessage("Writing the rating into the file...");
+        ThreadPool.QueueUserWorkItem(delegate
+        {
+            int done = 0;
+            var errs = new List<string>();
+            foreach (KeyValuePair<string, int> j in jobs)
+            {
+                try
+                {
+                    var fi = new FileInfo(j.Key);
+                    long oldSize = fi.Length, oldMod = fi.LastWriteTimeUtc.Ticks;
+                    RatingWriter.Write(j.Key, j.Value);
+                    Marks.Rebind(j.Key, oldSize, oldMod);           // ratings, labels and tags stay with the file
+                    done++;
+                }
+                catch (Exception ex) { errs.Add(Path.GetFileName(j.Key) + ": " + Util.Why(ex)); }
+            }
+            int d2 = done;
+            Util.Post(this, delegate { RatingsDone(d2, errs); });
+        });
+    }
+
+    void RatingsDone(int done, List<string> errs)
+    {
+        ratingBusy = false;
+        if (viewing) { canvas.Reload(); if (done > 0) canvas.ShowMessage("Rating written into the file"); }
+        else if (grid.Dir != null) grid.Rescan();
+        UpdatePreview();
+        status.Text = "  Wrote the rating into " + done + (done == 1 ? " file" : " files") + (errs.Count > 0 ? ", " + errs.Count + " left as they were" : "");
+        if (errs.Count > 0)
+        {
+            List<string> e = errs.Count > 8 ? errs.GetRange(0, 8) : errs;
+            Warn((done > 0 ? "Some files were left as they were:" : "Nothing was written:") + "\n\n" + string.Join("\n", e) + (errs.Count > 8 ? "\n..." : ""));
+        }
+    }
+
     void AuditDone(string dest, int pictures, int failed, string err)
     {
         auditBusy = false;
@@ -1452,11 +1578,16 @@ partial class MainForm
             "  X                       tag / untag;  the Show pull-down lists only tagged, rated or labelled pictures",
             "                          (marks are kept in marks.tsv next to settings.ini, never in the pictures)",
             "                          ratings stored in photos by Windows / Lightroom show in silver (read only)",
+            "  Edit > Rating > Write my ratings into the files   copies your stars into JPEG / PNG files (asks first)",
             "  F2                      rename",
             "  Ctrl+F2                 batch rename the selection (pattern such as holiday_###, with a preview)",
             "  Ctrl+Shift+C            compare the 2 selected pictures side by side (zoom and panning linked;",
             "                          rotate / flip / grid / info apply to both; Esc goes back)",
             "  Tools > Contact sheet   lossless PNG index sheets of the selection (100 per page, at most 2,000)",
+            "  Ctrl+Shift+E            convert the selection (or the picture in the viewer) to a retro format:",
+            "                          ZX Spectrum .scr, C64 Koala .koa / Doodle .dd, Amstrad CPC .scr (mode 0 / 1),",
+            "                          Atari ST Degas .pi1, Amiga IFF .iff, MSX .sc2 / .sc8;",
+            "                          new files only, each checked with RECOIL (also in the viewer)",
             "  Ctrl+Shift+A            folder audit: an offline HTML report of every picture file in this folder",
             "                          (platform, type, size, colours, duplicates, files that could not be opened)",
             "  Ctrl+C / Ctrl+X / Ctrl+V   copy / cut / paste files (cut + paste moves them; works with Explorer too)",
@@ -1467,7 +1598,7 @@ partial class MainForm
             "  Del                     delete (to the Recycle Bin)",
             "  F5                      refresh (the folder tree and the open folder also refresh by themselves)",
             "  Ctrl+S                  save the selection as lossless PNG",
-            "  Ctrl+Shift+S            save every frame of animated GIFs / pages of TIFFs as separate PNGs",
+            "  Ctrl+Shift+S            save every frame of animated GIFs and WebPs / pages of TIFFs as separate PNGs",
             "  Ctrl+Shift+R / L        turn the selected JPEG photos on disk, without loss (asks first; also in the viewer)",
             "  F8                      show / hide retro-computer formats",
             "  Right-click             menu: sort, details on tiles, invert selection ...",
@@ -1498,8 +1629,8 @@ partial class MainForm
             "  N                       crisp / sharp / smooth enlargement",
             "  I                       info bar (x, y and colour under the pointer)",
             "  E                       EXIF details (camera, exposure, date ...)",
-            "  P                       pause / play an animated GIF",
-            "  ,  /  .                 previous / next frame of an animated GIF",
+            "  P                       pause / play an animated GIF or WebP",
+            "  ,  /  .                 previous / next frame of an animated GIF or WebP",
             "  S                       slideshow;  Up / Down change the interval",
             "  Alt+0..5 / Shift+0..5 / X   rate / colour-label / tag the picture (Settings: move on to the next one)",
             "  Ctrl+C                  copy the picture to the clipboard",
@@ -1885,6 +2016,8 @@ partial class MainForm
         ToolStripMenuItem rate = MenuSub(edit, "Rati&ng", canMark);
         for (int ri = 0; ri <= 5; ri++)
             MenuKey(rate, ri == 0 ? "&No rating" : "&" + ri + "  " + Marks.StarText(ri), "Alt+" + ri, Keys.Alt | (Keys)((int)Keys.D0 + ri), null, null);
+        MenuSep(rate);
+        MenuEntry(rate, "&Write my ratings into the files (JPEG, PNG)...", "", delegate { WriteRatingsToFiles(); }, delegate { return !ratingBusy; }, null);
         ToolStripMenuItem lab = MenuSub(edit, "Colour &label", canMark);
         for (int li = 0; li <= 5; li++)
             MenuKey(lab, "&" + li + "  " + Marks.LabelNames[li], "Shift+" + li, Keys.Shift | (Keys)((int)Keys.D0 + li), null, null);
@@ -2064,10 +2197,12 @@ partial class MainForm
             delegate { return grid.Dir != null && !auditBusy; }, null);
         MenuEntry(tools, "&Contact sheet (lossless PNG)...", "", delegate { DoContactSheet(); },
             delegate { return !viewing && !sheetBusy && grid.SelectedIndices().Count > 0; }, null);
+        MenuKey(tools, "Con&vert to a retro format...", "Ctrl+Shift+E", Keys.Control | Keys.Shift | Keys.E,
+            delegate { return !convertBusy && (viewing ? canvas.CurrentPath != null : grid.SelectedIndices().Count > 0); }, null);
         MenuKey(tools, "Batch &rename...", "Ctrl+F2", Keys.Control | Keys.F2, delegate { return !viewing && grid.SelectedIndices().Count > 0; }, null);
         MenuSep(tools);
         MenuKey(tools, "&Slideshow", "S", Keys.S, delegate { return viewing && canvas.FileCount > 1; }, delegate { return canvas.Slideshow; });
-        ToolStripMenuItem anim = MenuSub(tools, "&Animated GIF", delegate { return viewing && canvas.Animated; });
+        ToolStripMenuItem anim = MenuSub(tools, "&Animated GIF / WebP", delegate { return viewing && canvas.Animated; });
         MenuKey(anim, "&Pause", "P", Keys.P, null, delegate { return canvas.AnimPaused; });
         MenuKey(anim, "Pre&vious frame", ",", Keys.Oemcomma, null, null);
         MenuKey(anim, "&Next frame", ".", Keys.OemPeriod, null, null);
@@ -2177,6 +2312,7 @@ partial class MainForm
         if (ctrl && shift && !alt && (k == Keys.R || k == Keys.L)) { RotateFiles(k == Keys.R ? 1 : 3); return true; }   // the file, not the view
         if (ctrl && shift && k == Keys.Y && !alt) { TransferTo(false, null); return true; }
         if (ctrl && shift && k == Keys.M && !alt) { TransferTo(true, null); return true; }
+        if (ctrl && shift && k == Keys.E && !alt) { DoConvert(); return true; }
         if (ctrl && k == Keys.S) { if (viewing) SaveCurrentPng(); else DoSavePng(); return true; }
         if (ctrl && k == Keys.O) { OpenDialog(); return true; }
 
