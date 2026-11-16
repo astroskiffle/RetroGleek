@@ -7,9 +7,19 @@ through [RECOIL](https://github.com/pfusik/recoil).
 
 ![title](images/title.jpg)
 
-Most modern image viewers are bloated and lifeless. They stretch vintage art onto sharp 4K monitors, stripping away the soul of the original artwork and leaving behind harsh, raw pixels.
+### See Your Retro Images the Way They Were Meant to Be Seen.
 
-Using advanced video shaders, RetroGleek emulates the iconic quirks of obsolete visual hardware. It automatically replicates scanlines, warm phosphor glow, shadow masks, aperture grilles, and true-to-era color blendings. And that’s only half the story. From classic CRT monitors to specific cable outputs, it simulates the entire visual signal path showing you your favorite retro images the way they were meant to be seen. Stop looking at sterile pixels. Rediscover the authentic glow of retro computing with RetroGleek. RetroGleek will also display modern image filetypes correctly and holds up as a great image viewer too. It won't beat the big commercial giants with regular images, but it's small, and it's built for complete offline use.
+Modern screens make classic pixel art look cold, flat, and sterile. RetroGleek brings back the warmth, depth, and unmistakable soul of vintage hardware.
+Powered by advanced video shaders, RetroGleek doesn't just slap a filter on your screen, it simulates the entire visual signal path. From the subtle quirks of specific cable outputs to the physical glass of classic CRT monitors, it automatically replicates:
+
+* Authentic scanlines & warm phosphor glow
+* True-to-era color blending
+* Detailed shadow masks & aperture grilles
+
+### More Than Just a Nostalgia Machine
+
+While RetroGleek shines at breathing life into vintage visuals, it also doubles as a fast, reliable image viewer for modern file types. It doesn't try to compete with bloated commercial software, instead, it stays lightweight, respects your privacy, and is built for 100% offline use.
+Stop staring at sterile pixels. Rediscover the authentic glow of retro computing.
 
 It builds into **one small `.exe`** using the C# compiler that already ships with Windows: no SDK, no installer,
 no NuGet packages and no internet connection.
