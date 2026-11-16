@@ -7,7 +7,7 @@ rem Every source file is listed in SRC below: add new .cs files to that list.
 set "CSC=%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 if not exist "%CSC%" set "CSC=%WINDIR%\Microsoft.NET\Framework\v4.0.30319\csc.exe"
 set REFS=/reference:System.dll /reference:System.Drawing.dll /reference:System.Windows.Forms.dll /reference:Microsoft.VisualBasic.dll
-set SRC="%~dp0Program.cs" "%~dp0Util.cs" "%~dp0Imaging.cs" "%~dp0Thumbnails.cs" "%~dp0Controls.cs" "%~dp0Canvas.cs" "%~dp0ThumbGrid.cs" "%~dp0MainForm.cs" "%~dp0MainForm.Files.cs" "%~dp0MainForm.Undo.cs" "%~dp0BatchRename.cs" "%~dp0Settings.cs" "%~dp0Audit.cs" "%~dp0ScreenEffects.cs" "%~dp0RECOIL.cs"
+set SRC="%~dp0Program.cs" "%~dp0Util.cs" "%~dp0Imaging.cs" "%~dp0Thumbnails.cs" "%~dp0Controls.cs" "%~dp0Canvas.cs" "%~dp0ThumbGrid.cs" "%~dp0MainForm.cs" "%~dp0MainForm.Files.cs" "%~dp0MainForm.Undo.cs" "%~dp0BatchRename.cs" "%~dp0Settings.cs" "%~dp0Audit.cs" "%~dp0ScreenEffects.cs" "%~dp0Marks.cs" "%~dp0ContactSheet.cs" "%~dp0JpegRotate.cs" "%~dp0RECOIL.cs"
 "%CSC%" /nologo /target:winexe /optimize+ /platform:anycpu /out:"%~dp0RetroGleek.exe" /win32manifest:"%~dp0RetroGleek.manifest" %REFS% %SRC%
 if errorlevel 1 (echo. & echo Build FAILED. & goto end)
 echo. & echo Built RetroGleek.exe

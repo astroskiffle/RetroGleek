@@ -406,6 +406,7 @@ sealed class Pic : IDisposable
     public string Note;          // e.g. the retro platform name
     public RetroGeom Geom;       // retro pictures only: original resolution and pixel density
     public List<string> Exif;    // readable EXIF lines (camera, exposure ...), or null
+    public int FileStars;        // star rating stored in the file (Windows, Lightroom ...), 0 = none
 
     public void Dispose()
     {

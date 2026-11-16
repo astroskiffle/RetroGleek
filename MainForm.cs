@@ -30,7 +30,8 @@ sealed partial class MainForm : Form
     Panel right, addrPanel, filterPanel;
     TextBox addrBox, filterBox;
     Button btnBack, btnFwd, btnUp, sortDirBtn;
-    DarkCombo sortCombo;
+    DarkCombo sortCombo, showCombo;
+    bool autoAdvance;                                      // after marking a picture, move to the next one
     DarkSlider sizeSlider;
     ToolStripMenuItem gDetails, gSortDesc;
     readonly ToolStripMenuItem[] gSort = new ToolStripMenuItem[4];
@@ -49,6 +50,8 @@ sealed partial class MainForm : Form
     ToolStripMenuItem gInvert, gCut, tCut;
     Button subBtn, viewBtn;
     DetailHeader detailHeader;
+    PreviewPane preview;                                   // Alt+P: large preview of the focused picture (off by default)
+    Splitter previewSplit;
     ToolStripMenuItem gBatch, gFrames, gCompare;
     ToolStripMenuItem gOpen, gRename, gCopy, gPaste, gSave, gDelete, tRename, tCopy, tPaste, tDelete, tNew, gRetro, tRetro;
 
@@ -82,7 +85,7 @@ sealed partial class MainForm : Form
         StartPosition = FormStartPosition.CenterScreen;
 
         icons = new ImageList { ColorDepth = ColorDepth.Depth32Bit, ImageSize = new Size(Util.S(16), Util.S(16)) };
-        for (int k = 0; k < 3; k++) icons.Images.Add(DrawIcon(k, Util.S(16)));
+        for (int k = 0; k < 4; k++) icons.Images.Add(DrawIcon(k, Util.S(16)));
 
         tree = new TreeView
         {
@@ -102,6 +105,7 @@ sealed partial class MainForm : Form
         grid.OpenRequested += OpenIndex;
         grid.ContextRequested += ShowGridMenu;
         grid.SelectionChanged += UpdateStatus;
+        grid.SelectionChanged += UpdatePreview;
         grid.AnalyseProgress += delegate (int done, int total) { status.Text = "  Analysing " + done + " of " + total + " pictures (colours, frames, duplicates)..."; };
         grid.AnalyseFinished += delegate (int n, int bad, int dups)
         {
@@ -110,7 +114,7 @@ sealed partial class MainForm : Form
                           dups + (dups == 1 ? " duplicate" : " duplicates") + "   (Details view: Frames, Colours and Status columns)";
         };
         grid.Loaded += OnFolderLoaded;
-        grid.ListChanged += delegate { UpdateStatus(); SyncCanvas(); SyncSortControls(); };
+        grid.ListChanged += delegate { UpdateStatus(); SyncCanvas(); SyncSortControls(); UpdatePreview(); };
         grid.TileStepChanged += delegate
         {
             suppressSize = true;
@@ -153,15 +157,15 @@ sealed partial class MainForm : Form
         Font barFont = new Font("Segoe UI", 9.5f);
         var sortLab = new Label { Text = "Sort:", Left = 0, Top = 0, Width = Util.S(40), Height = barH, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Color.Silver, Font = barFont };
         sortCombo = new DarkCombo { Left = Util.S(40), Top = Math.Max(0, (barH - Util.S(26)) / 2), Width = Util.S(136), Height = Util.S(26), BackColor = boxBg, ForeColor = Color.White, Font = barFont };
-        sortCombo.SetItems("Name", "Date modified", "Size", "Type", "Platform", "Dimensions", "Frames", "Colours", "Status");
+        sortCombo.SetItems("Name", "Date modified", "Size", "Type", "Platform", "Dimensions", "Frames", "Colours", "Status", "Rating", "Label");
         sortCombo.SelectedIndex = 0;
         sortCombo.SelectedIndexChanged += delegate
         {
             int key = sortCombo.SelectedIndex;
-            if (!suppressSort && key >= 0 && key != grid.SortKey) grid.SetSort(key, key == 1 || key == 2 || key == 5 || key == 6 || key == 7);   // newest / largest first
+            if (!suppressSort && key >= 0 && key != grid.SortKey) grid.SetSort(key, key == 1 || key == 2 || key == 5 || key == 6 || key == 7 || key == 9);   // newest / largest / most stars first
         };
         sortCombo.DropDownClosed += delegate { grid.Focus(); };
-        navTip.SetToolTip(sortCombo, "Sort the pictures by name, date modified, size or type");
+        navTip.SetToolTip(sortCombo, "Sort the pictures by name, date, size, type, platform, dimensions, frames, colours, status, rating or label");
         sortDirBtn = new Button { Left = Util.S(180), Top = Math.Max(0, (barH - Util.S(26)) / 2), Width = Util.S(30), Height = Util.S(26), TabStop = false, FlatStyle = FlatStyle.Flat, BackColor = boxBg };
         sortDirBtn.FlatAppearance.BorderSize = 0;
         sortDirBtn.FlatAppearance.MouseOverBackColor = Color.FromArgb(72, 72, 72);
@@ -217,12 +221,32 @@ sealed partial class MainForm : Form
         filterPanel.Controls.Add(viewBtn);
         filterPanel.Controls.Add(new Label { Dock = DockStyle.Right, Width = Util.S(8) });
         filterPanel.Controls.Add(tools);
+
+        // Show pull-down (marks): all pictures, or only tagged / rated / colour-labelled ones
+        var showLab = new Label { Text = "Show:", Left = Util.S(6), Top = 0, Width = Util.S(44), Height = barH, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Color.Silver, Font = barFont };
+        showCombo = new DarkCombo { Left = Util.S(50), Top = Math.Max(0, (barH - Util.S(26)) / 2), Width = Util.S(140), Height = Util.S(26), BackColor = boxBg, ForeColor = Color.White, Font = barFont };
+        showCombo.SetItems(ThumbGrid.ShowNames);
+        showCombo.SelectedIndex = 0;
+        showCombo.SelectedIndexChanged += delegate { if (showCombo.SelectedIndex >= 0) grid.ShowMode = showCombo.SelectedIndex; };
+        showCombo.DropDownClosed += delegate { grid.Focus(); };
+        navTip.SetToolTip(showCombo, "Show all pictures, or only tagged, rated or colour-labelled ones (Alt+0..5 rates, Shift+0..5 labels, X tags)");
+        var showPanel = new Panel { Dock = DockStyle.Right, Width = Util.S(196), BackColor = panelBg };
+        showPanel.Controls.Add(showLab); showPanel.Controls.Add(showCombo);
+        filterPanel.Controls.Add(showPanel);
         filterPanel.Controls.Add(fLab);
 
         right = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(24, 24, 24) };
         detailHeader = new DetailHeader(grid) { Visible = false };
         right.Controls.Add(grid);                 // fill first, edge-docked after
         right.Controls.Add(detailHeader);         // column titles of the Details view, just above the grid
+        preview = new PreviewPane { Dock = DockStyle.Right, Width = Util.S(320), Visible = false };
+        previewSplit = new Splitter
+        {
+            Dock = DockStyle.Right, Width = Util.S(5), MinSize = Util.S(180), MinExtra = Util.S(240),
+            BackColor = Color.FromArgb(52, 52, 52), Visible = false
+        };
+        right.Controls.Add(previewSplit);         // docks after the pane, so it sits on the pane's left edge
+        right.Controls.Add(preview);              // beside the grid and its header, below the filter bar
         right.Controls.Add(filterPanel);
         browse.Controls.Add(right);
         browse.Controls.Add(splitter);
@@ -294,8 +318,10 @@ sealed partial class MainForm : Form
             }
             if (Prefs.Bool("maximized", false)) WindowState = FormWindowState.Maximized;
             tree.Width = Util.S(Prefs.Int("treeWidth", 280, 140, 2000));
-            int sk = Prefs.Int("sort", 0, 0, 8);
-            grid.SetSort(sk >= 6 ? 0 : sk, sk >= 6 ? false : Prefs.Bool("sortDesc", false));   // analysis sorts need an analysis first
+            Marks.Load();                                          // ratings, colour labels and tags (marks.tsv)
+            int sk = Prefs.Int("sort", 0, 0, 10);
+            bool needsAnalysis = sk >= 6 && sk <= 8;
+            grid.SetSort(needsAnalysis ? 0 : sk, needsAnalysis ? false : Prefs.Bool("sortDesc", false));   // analysis sorts need an analysis first
             grid.GridStep = Prefs.Int("thumbSize", grid.GridStep, 0, ThumbGrid.TileStepMax);
             grid.RowStep = Prefs.Int("rowSize", grid.RowStep, 0, ThumbGrid.TileStepMax);
             grid.ShowDetails = Prefs.Bool("details", grid.ShowDetails);
@@ -313,7 +339,13 @@ sealed partial class MainForm : Form
             canvas.GlowMode = Prefs.Int("glow", 0, 0, 2);
             canvas.CurveMode = Prefs.Int("curvature", 0, 0, 2);
             canvas.AutoEffects = Prefs.Bool("autoEffects", false);
+            autoAdvance = Prefs.Bool("autoAdvance", false);
+            canvas.Filmstrip = Prefs.Bool("filmstrip", false);
+            preview.Width = Util.S(Prefs.Int("previewWidth", 320, 180, 2000));
+            SetPreview(Prefs.Bool("previewPane", false));
             LoadPresets();
+            LoadRecentDest();
+            LoadFavourites();
         }
         catch (Exception) { }                                     // a damaged file just means defaults
     }
@@ -369,7 +401,13 @@ sealed partial class MainForm : Form
         Prefs.Set("glow", own.Glow);
         Prefs.Set("curvature", own.Curve);
         Prefs.Set("autoEffects", canvas.AutoEffects);
+        Prefs.Set("autoAdvance", autoAdvance);
+        Prefs.Set("filmstrip", canvas.Filmstrip);
+        Prefs.Set("previewPane", preview.Visible);
+        Prefs.Set("previewWidth", (int)Math.Round(preview.Width / Util.K));
         StorePresets();
+        StoreRecentDest();
+        StoreFavourites();
         Prefs.Set("lastFolder", grid.Dir);
         Prefs.Save();
     }
@@ -423,6 +461,17 @@ sealed partial class MainForm : Form
                     g.FillRectangle(body, 1 * u, 5 * u, 14 * u, 7 * u);
                     g.FillRectangle(led, 11 * u, 9 * u, 2 * u, 1.5f * u);
                 }
+            else if (kind == 3)   // favourite: a yellow star
+            {
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                var pts = new PointF[10];
+                for (int i = 0; i < 10; i++)
+                {
+                    double ang = -Math.PI / 2 + i * Math.PI / 5, r = (i & 1) == 0 ? 7.2 : 3.0;
+                    pts[i] = new PointF((float)(8 + r * Math.Cos(ang)) * u, (float)(8.4 + r * Math.Sin(ang)) * u);
+                }
+                using (var star = new SolidBrush(Color.FromArgb(245, 200, 70))) g.FillPolygon(star, pts);
+            }
             else                  // this PC
                 using (var screen = new SolidBrush(Color.FromArgb(70, 140, 230)))
                 using (var stand = new SolidBrush(Color.FromArgb(170, 176, 186)))
@@ -916,6 +965,7 @@ sealed partial class MainForm : Form
         UpdateStatus();
         if (!viewing) Text = dir + " - RetroGleek";
         RecordHistory(dir);
+        if (err == null) RememberRecentFolder(dir);
         if (!addrBox.Focused) addrBox.Text = dir;
         UpdateNavButtons();
         SyncCanvas();
@@ -968,6 +1018,32 @@ sealed partial class MainForm : Form
         if (rescan && grid.Dir != null) { grid.Rescan(); UpdateStatus(); }
     }
 
+    // Alt+P: the preview pane to the right of the thumbnails (remembered in settings.ini)
+    void SetPreview(bool on)
+    {
+        SuspendLayout();
+        preview.Visible = on;
+        previewSplit.Visible = on;
+        ResumeLayout(true);
+        UpdatePreview();
+    }
+
+    void UpdatePreview()
+    {
+        if (preview == null || !preview.Visible) return;
+        int f = grid.FocusIndex;
+        List<int> sel = grid.SelectedIndices();
+        Item it = f >= 0 && f < grid.Items.Count ? grid.Items[f] : sel.Count > 0 ? grid.Items[sel[0]] : null;
+        string folder = null;
+        if (it != null && grid.Recursive && grid.Dir != null)
+        {
+            string d = Path.GetDirectoryName(it.Path);
+            folder = Util.SameDir(d, grid.Dir) ? "(this folder)" : d.Substring(Math.Min(d.Length, grid.Dir.TrimEnd('\\').Length + 1));
+        }
+        int others = it != null && sel.Count > 1 ? sel.Count - (it.Sel ? 1 : 0) : 0;
+        preview.ShowItem(it, grid.MarkOf(it), folder, others);
+    }
+
     // thumbnails <-> details list (remembered in settings.ini)
     void SetDetailsView(bool on)
     {
@@ -1000,7 +1076,7 @@ sealed partial class MainForm : Form
         try
         {
             path = Path.GetFullPath(path);
-            if (grid.FilterActive) filterBox.Text = "";           // opening something explicitly shouldn't be hidden by a filter
+            if (grid.FilterActive) { filterBox.Text = ""; SetShow(0); }   // opening something explicitly shouldn't be hidden by a filter
             if (Directory.Exists(path))
             {
                 SetViewing(false);
@@ -1114,6 +1190,7 @@ sealed partial class MainForm : Form
         bool navKey = k == Keys.Left || k == Keys.Right || k == Keys.PageUp || k == Keys.PageDown || k == Keys.Space ||
                       k == Keys.Back || k == Keys.Home || k == Keys.End || k == Keys.S || k == Keys.Up || k == Keys.Down;
         if (navKey || ctrl) return true;                   // nothing to step through; Ctrl+C / Ctrl+S etc. do nothing here
+        if (k == Keys.Z) return true;                      // no loupe while comparing (only one side would see Z let go)
         if (zoomKey) return cmpA.HandleKey(keyData);
         bool used = cmpA.HandleKey(keyData);
         used |= cmpB.HandleKey(keyData);
@@ -1141,7 +1218,9 @@ sealed partial class MainForm : Form
         int shown = grid.Items.Count, total = grid.TotalCount;
         string s = "  " + (grid.FilterActive ? shown + " of " + total : total.ToString()) + (total == 1 ? " image" : " images");
         if (grid.Recursive) s += grid.Truncated ? " (including subfolders; stopped at " + ThumbGrid.MaxRecursive + ")" : " (including subfolders)";
-        if (grid.FilterActive) s += " (filtered)";
+        if (grid.FilterActive) s += grid.ShowMode != 0 ? " (showing: " + ThumbGrid.ShowNames[grid.ShowMode] + ")" : " (filtered)";
+        int tagged = grid.CountTagged();
+        if (tagged > 0) s += "   |   " + tagged + " tagged";
         if (sel.Count > 0) s += "   |   " + sel.Count + " selected (" + Util.FmtSize(bytes) + ")";
         if (grid.SortKey != 0 || grid.SortDesc) s += "   |   sorted by " + grid.SortLabel;
         if (sel.Count == 1)

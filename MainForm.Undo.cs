@@ -38,6 +38,7 @@ partial class MainForm
     void PushUndo(string text, bool move, List<KeyValuePair<string, string>> pairs)
     {
         if (pairs == null || pairs.Count == 0) return;
+        Marks.Moved(pairs);                                // ratings, labels and tags follow renamed / moved pictures
         undoSteps.Add(new UndoStep { Text = text, Move = move, Pairs = pairs });
         if (undoSteps.Count > MaxUndo) undoSteps.RemoveAt(0);
     }
@@ -65,6 +66,7 @@ partial class MainForm
         var touched = new List<string>();
         string gd = grid.Dir, follow = null, firstBack = null;
         int back = 0;
+        var backPairs = new List<KeyValuePair<string, string>>();   // what really went back: its marks go with it
         Cursor = Cursors.WaitCursor;
         try
         {
@@ -103,6 +105,7 @@ partial class MainForm
                     {
                         MovePath(t.Value, t.Key.Key);
                         back++;
+                        backPairs.Add(new KeyValuePair<string, string>(t.Key.Value, t.Key.Key));
                         if (firstBack == null) firstBack = t.Key.Key;
                         touched.Add(Path.GetDirectoryName(t.Key.Key));
                         if (gd != null && Directory.Exists(t.Key.Key) && InsideOrSame(gd, t.Key.Value))
@@ -127,6 +130,7 @@ partial class MainForm
                         if (isDir) VBFS.MoveDirectory(pr.Value, pr.Key, VBUI.AllDialogs, VBCancel.ThrowException);
                         else VBFS.MoveFile(pr.Value, pr.Key, VBUI.AllDialogs, VBCancel.ThrowException);
                         back++;
+                        backPairs.Add(new KeyValuePair<string, string>(pr.Value, pr.Key));
                         firstBack = pr.Key;
                         touched.Add(Path.GetDirectoryName(pr.Key));
                         touched.Add(Path.GetDirectoryName(pr.Value));
@@ -138,6 +142,7 @@ partial class MainForm
             }
         }
         finally { Cursor = Cursors.Default; }
+        Marks.Moved(backPairs);
 
         foreach (string d in touched)
             foreach (TreeNode n in FindLoadedNodes(d)) RefreshFolderNode(n);

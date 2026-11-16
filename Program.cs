@@ -22,6 +22,7 @@
 //   Ctrl+Z                            undo the last rename, batch rename or move (20 steps, while running)
 //   Ctrl+Shift+S                      every frame of an animated GIF / page of a TIFF as separate lossless PNGs
 //   Ctrl+Shift+A                      folder audit report (HTML): platforms, types, failures, duplicates
+//   Alt+0..5 / Shift+0..5 / X         rating / colour label / tag (browser and viewer); Show pull-down filters by them
 //
 // COMMAND LINE AUDIT (no window):  RetroGleek.exe --audit <folder> [--out <file>] [--no-thumbs] [--csv] [--overwrite]
 //   or the console companion, with progress and a summary:  RetroGleekCli.exe <folder> [same options] [--quiet]
@@ -58,12 +59,14 @@
 // BROWSING AIDS
 //   Filter box (always visible; Ctrl+F jumps to it, Esc clears it): part of a name, or * ? wildcards; spaces mean AND
 //   To its right: a Sort pull-down (name, date modified, size, type) with a reverse arrow, and a thumbnail Size slider
+//   Alt+P    preview pane (large preview + facts of the focused picture, right of the thumbnails)
+//   Ctrl+D   add / remove the open folder as a favourite (tree, Go > Favourites); Go > Recent folders
 //   Ctrl+L   address bar: type or paste a local path, Enter.   Alt+Left / Alt+Right / Alt+Up (or Backspace) = back / forward / up
 //   Right-click > Sort by also works; Ctrl + mouse wheel also changes the thumbnail size
 //   Right-click > Show details on tiles: size and platform under each name; rest the pointer on a tile for more
 // VIEWER EXTRAS
 //   S slideshow (Up / Down = interval; S or Esc stops)    2..9 = 200%..900% zoom    + / - = whole-number steps above 100%
-//   G pixel grid (at 800% and above)    N crisp / sharp / smooth enlargement    the info bar shows x, y and colour under the pointer
+//   J filmstrip    Z (hold) loupe    G pixel grid (at 800% and above)    N crisp / sharp / smooth enlargement    the info bar shows x, y and colour under the pointer
 //   H / V flip left-right / top-bottom    B checkerboard behind transparency    Ctrl+C copy the picture    Del Recycle Bin
 //   E EXIF details    P pause / play an animated GIF    , / . previous / next frame
 //   T True TV aspect (pixel shape of the original screen)    K scanlines    M phosphor mask    C RGB / S-Video / composite signal    W glow    U curvature
@@ -86,6 +89,9 @@
 //   Settings.cs        remembered settings (settings.ini)
 //   Audit.cs           folder audit: offline HTML report of every picture file in one folder
 //   ScreenEffects.cs   screen effect sets: presets (Ctrl+1..9) and the automatic choice for each computer (A)
+//   JpegRotate.cs      lossless JPEG turn on disk (orientation tag, or GDI+'s lossless transform), checked first
+//   ContactSheet.cs    contact sheet: lossless PNG index sheets of the selection (Tools menu)
+//   Marks.cs           ratings, colour labels and tags (marks.tsv next to settings.ini; never inside the pictures)
 //   RECOIL.cs          generated RECOIL library (never edit by hand; see tools/downgrade_recoil.py)
 
 using System;
@@ -111,8 +117,8 @@ using WinTimer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("RetroGleek")]
 [assembly: AssemblyCompany("Mark Billson")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 Mark Billson. MIT License.")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
 
 static class Program
 {
@@ -202,7 +208,7 @@ static class Program
     //   --audit <folder> [--out <file>] [--no-thumbs] [--csv] [--overwrite] [--quiet]
     // Exit code: 0 = every picture file opened, 1 = some could not be opened, 2 = error (bad arguments, folder missing
     // or not local, report already exists without --overwrite, report could not be written). No dialog boxes;
-    // settings.ini is neither read nor written.
+    // settings.ini is neither read nor written; marks.tsv is read (never written) so the report includes your marks.
     static int RunAudit(string[] args, TextWriter outw, TextWriter errw)
     {
         try
@@ -231,6 +237,7 @@ static class Program
             if (!Directory.Exists(Path.GetDirectoryName(dest))) return Fail(errw, "The folder for the report does not exist: " + Path.GetDirectoryName(dest));
             if (File.Exists(dest) && !overwrite) return Fail(errw, "The report already exists (add --overwrite to replace it): " + dest);
 
+            Marks.Load();                                    // read only: the report shows your ratings, labels and tags
             bool live = errw != null && !quiet && !ErrRedirected();
             Action<int, int, string> progress = null;
             if (live)

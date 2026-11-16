@@ -86,6 +86,107 @@ partial class MainForm
         AddEntry(treeMenu, "Refresh", "F5", delegate { ReloadAll(); });
         treeMenu.Items.Add(new ToolStripSeparator());
         tRetro = AddEntry(treeMenu, "Show retro-computer formats (RECOIL)", "F8", delegate { ToggleRetro(); });
+        treeMenu.Items.Insert(1, tFav = new ToolStripMenuItem("Add to favourites"));
+        tFav.Click += delegate { ToggleFavourite(NodePath(tree.SelectedNode)); };
+    }
+
+    // ---------------------------------------------------------------- favourite and recent folders
+
+    // Favourites (Ctrl+D, Go > Favourites, right-click a folder in the tree): shortcuts listed in the tree after
+    // Desktop, Documents, Downloads and Pictures, with a star. Recent folders: the last 10 folders opened.
+    // Both are remembered in settings.ini. A favourite is only a shortcut: removing it never touches the folder.
+    const int MaxFavourites = 20, MaxRecentFolders = 10;
+    readonly List<string> favourites = new List<string>();
+    readonly List<string> recentFolders = new List<string>();
+    ToolStripMenuItem tFav;
+
+    void LoadFavourites()
+    {
+        favourites.Clear(); recentFolders.Clear();
+        for (int i = 1; i <= MaxFavourites; i++)
+        {
+            string p = Prefs.Get("favourite" + i, null);
+            if (!string.IsNullOrEmpty(p) && !p.StartsWith("\\\\") && !favourites.Exists(x => Util.SameDir(x, p))) favourites.Add(p);
+        }
+        for (int i = 1; i <= MaxRecentFolders; i++)
+        {
+            string p = Prefs.Get("recentFolder" + i, null);
+            if (!string.IsNullOrEmpty(p) && !p.StartsWith("\\\\") && !recentFolders.Exists(x => Util.SameDir(x, p))) recentFolders.Add(p);
+        }
+        RefreshFavNodes();
+    }
+
+    void StoreFavourites()
+    {
+        for (int i = 1; i <= MaxFavourites; i++) Prefs.Set("favourite" + i, i <= favourites.Count ? favourites[i - 1] : null);
+        for (int i = 1; i <= MaxRecentFolders; i++) Prefs.Set("recentFolder" + i, i <= recentFolders.Count ? recentFolders[i - 1] : null);
+    }
+
+    bool IsFavourite(string dir) { return dir != null && favourites.Exists(x => Util.SameDir(x, dir)); }
+
+    void ToggleFavourite(string dir)
+    {
+        if (string.IsNullOrEmpty(dir)) return;
+        string name = FavText(dir);
+        if (IsFavourite(dir))
+        {
+            favourites.RemoveAll(x => Util.SameDir(x, dir));
+            status.Text = "  Removed " + name + " from the favourites (the folder itself is untouched)";
+        }
+        else
+        {
+            if (favourites.Count >= MaxFavourites) { Warn("You already have " + MaxFavourites + " favourites. Remove one first (right-click it in the folder tree)."); return; }
+            favourites.Add(dir);
+            status.Text = "  Added " + name + " to the favourites (in the folder tree and Go > Favourites)";
+        }
+        StoreFavourites();
+        RefreshFavNodes();
+        if (viewing) canvas.ShowMessage(IsFavourite(dir) ? "Added " + name + " to the favourites" : "Removed " + name + " from the favourites");
+    }
+
+    static string FavText(string dir)
+    {
+        string n = Path.GetFileName(dir.TrimEnd('\\', '/'));
+        return n.Length > 0 ? n : dir;
+    }
+
+    // the favourites' nodes in the tree: right after the quick-access entries
+    void RefreshFavNodes()
+    {
+        if (pcNode == null) return;
+        tree.ShowNodeToolTips = true;
+        suppress = true;                                   // no folder change while the nodes are swapped
+        tree.BeginUpdate();
+        try
+        {
+            TreeNode sel = tree.SelectedNode;
+            bool selWasFav = sel != null && sel.Name == "fav";
+            for (int i = pcNode.Nodes.Count - 1; i >= 0; i--) if (pcNode.Nodes[i].Name == "fav") { waiting.Remove(pcNode.Nodes[i]); pcNode.Nodes.RemoveAt(i); }
+            int at = 0;
+            for (int i = 0; i < pcNode.Nodes.Count; i++) if (pcNode.Nodes[i].Name == "quick") at = i + 1;
+            foreach (string f in favourites)
+            {
+                TreeNode n = MakeNode(f, FavText(f), "fav", 3);
+                n.ToolTipText = f;
+                pcNode.Nodes.Insert(at++, n);
+            }
+            if (selWasFav) tree.SelectedNode = pcNode;
+        }
+        finally { tree.EndUpdate(); suppress = false; }
+    }
+
+    void RememberRecentFolder(string dir)
+    {
+        recentFolders.RemoveAll(x => Util.SameDir(x, dir));
+        recentFolders.Insert(0, dir);
+        while (recentFolders.Count > MaxRecentFolders) recentFolders.RemoveAt(recentFolders.Count - 1);
+    }
+
+    // from Go > Favourites / Recent folders
+    void OpenFolderShortcut(string dir)
+    {
+        if (!Directory.Exists(dir)) { Warn("That folder isn't available right now (moved, deleted, or on a drive that isn't connected):\n\n" + dir); return; }
+        OpenImage(dir);
     }
 
     static bool ClipHasFiles()
@@ -121,8 +222,10 @@ partial class MainForm
         tree.SelectedNode = e.Node;
         lastPane = tree;
         string p = NodePath(e.Node);
-        bool real = p != null, plain = real && !IsRootPath(p);
+        bool real = p != null, plain = real && !IsRootPath(p) && e.Node.Name != "fav";   // a favourite is a shortcut
         tNew.Enabled = real;
+        tFav.Enabled = real;
+        tFav.Text = real && IsFavourite(p) ? "Remove from favourites" : "Add to favourites";
         tRename.Enabled = plain;
         tCopy.Enabled = plain;
         tCut.Enabled = plain;
@@ -405,7 +508,7 @@ partial class MainForm
     {
         var n = e.Item as TreeNode;
         string p = NodePath(n);
-        if (n == null || p == null || n.Name == "quick" || IsRootPath(p)) return;
+        if (n == null || p == null || n.Name == "quick" || n.Name == "fav" || IsRootPath(p)) return;   // shortcuts: never dragged
         if (ProtectedFolder(p) != null) { status.Text = "  " + Path.GetFileName(p) + " is a Windows folder and can't be moved"; return; }
         var list = new StringCollection();
         list.Add(p);
@@ -520,6 +623,87 @@ partial class MainForm
         bool move = eff == DragDropEffects.Move;
         // run after the drop has finished, so the program the files came from (maybe Explorer) isn't kept waiting
         BeginInvoke(new MethodInvoker(delegate { if (move) MoveItems(srcs, to); else CopyItems(srcs, to); }));
+    }
+
+    // ---------------------------------------------------------------- copy to / move to a folder
+
+    // Ctrl+Shift+Y / Ctrl+Shift+M (or Edit > Copy to / Move to): the selected pictures (or the folder chosen in the
+    // tree, or the picture in the viewer) go to a folder you pick, or to one of the last 8 used. The same copy and
+    // move as everywhere else: nothing is overwritten, local drives only, and a move can be undone with Ctrl+Z.
+    const int MaxRecentDest = 8;
+    readonly List<string> recentDest = new List<string>();
+
+    void LoadRecentDest()
+    {
+        recentDest.Clear();
+        for (int i = 1; i <= MaxRecentDest; i++)
+        {
+            string p = Prefs.Get("recentDest" + i, null);
+            if (!string.IsNullOrEmpty(p) && !recentDest.Exists(x => Util.SameDir(x, p))) recentDest.Add(p);
+        }
+    }
+
+    void StoreRecentDest()
+    {
+        for (int i = 1; i <= MaxRecentDest; i++) Prefs.Set("recentDest" + i, i <= recentDest.Count ? recentDest[i - 1] : null);
+    }
+
+    void RememberDest(string dir)
+    {
+        recentDest.RemoveAll(x => Util.SameDir(x, dir));
+        recentDest.Insert(0, dir);
+        while (recentDest.Count > MaxRecentDest) recentDest.RemoveAt(recentDest.Count - 1);
+        StoreRecentDest();
+    }
+
+    List<string> TransferSources()
+    {
+        var list = new List<string>();
+        if (viewing) { string p = canvas.CurrentPath; if (p != null && File.Exists(p)) list.Add(p); return list; }
+        if (lastPane == tree) { string p = NodePath(tree.SelectedNode); if (p != null && !IsRootPath(p)) list.Add(p); return list; }
+        foreach (int i in grid.SelectedIndices()) list.Add(grid.Items[i].Path);
+        return list;
+    }
+
+    // dest null: ask with a folder dialog
+    void TransferTo(bool move, string dest)
+    {
+        List<string> srcs = TransferSources();
+        if (srcs.Count == 0) return;
+        if (comparing) return;
+        string what = srcs.Count == 1 ? "\"" + Path.GetFileName(srcs[0].TrimEnd('\\')) + "\"" : srcs.Count + " items";
+        if (dest == null)
+        {
+            using (var d = new FolderBrowserDialog())
+            {
+                d.Description = (move ? "Move " : "Copy ") + what + " to this folder. Nothing is ever overwritten: a name that is already taken gets a number added.";
+                d.ShowNewFolderButton = true;
+                string start = recentDest.Count > 0 && Directory.Exists(recentDest[0]) ? recentDest[0] : grid.Dir;
+                if (start != null) d.SelectedPath = start;
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+                dest = d.SelectedPath;
+            }
+        }
+        if (!Directory.Exists(dest)) { Warn("That folder isn't there any more:\n" + dest); recentDest.RemoveAll(x => Util.SameDir(x, dest)); return; }
+        string why = RefuseSource(dest);                      // the same local-drives-only rule as for the source
+        if (why != null) { Warn("RetroGleek can't " + (move ? "move" : "copy") + " there: " + why); return; }
+        RememberDest(dest);
+        string place = Path.GetFileName(dest.TrimEnd('\\'));
+        if (place.Length == 0) place = dest;
+        if (!move)
+        {
+            CopyItems(srcs, dest);
+            if (viewing) canvas.ShowMessage("Copying " + what + " to " + place);
+            return;
+        }
+        string shown = viewing ? srcs[0] : null;
+        bool moved = MoveItems(srcs, dest);
+        if (viewing && moved && shown != null && !File.Exists(shown))
+        {
+            bool left = canvas.RemoveCurrent();               // the viewer moves on to the next picture
+            if (!left) SetViewing(false);
+            else canvas.ShowMessage("Moved " + what + " to " + place + "   (Ctrl+Z in the browser undoes it)");
+        }
     }
 
     void PasteDone(string dest, List<string> errs)
@@ -803,6 +987,147 @@ partial class MainForm
         });
     }
 
+    // Tools > Contact sheet: lossless PNG index sheets of the selected pictures (at most 2,000; 100 per page)
+    bool sheetBusy;
+
+    void DoContactSheet()
+    {
+        if (viewing || sheetBusy) return;
+        var paths = new List<string>();
+        foreach (int i in grid.SelectedIndices()) if (!grid.Items[i].Offline) paths.Add(grid.Items[i].Path);
+        if (paths.Count == 0) { Warn("Select the pictures for the contact sheet first (Ctrl+A selects them all)."); return; }
+        if (paths.Count > ContactSheet.MaxPictures)
+        {
+            Warn(paths.Count + " pictures are selected. A contact sheet takes at most " + ContactSheet.MaxPictures + " (20 pages of 100), " +
+                 "so it stays quick to make and to open. Select fewer, or use the folder audit report (Ctrl+Shift+A) for a whole collection.");
+            return;
+        }
+        string chosen; bool overwrite;
+        SheetOptions o = ContactSheet.Ask(this, paths.Count, grid.Dir, DarkTitle, out chosen, out overwrite);
+        if (o == null) return;
+        string destDir = Path.GetDirectoryName(chosen);
+        string why = RefuseSource(destDir);
+        if (why != null) { Warn("The contact sheet can't be saved there: " + why); return; }
+        long low, high, px;
+        ContactSheet.Estimate(paths.Count, o.Size, out low, out high, out px);
+        try
+        {
+            var drive = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(chosen)));
+            if (drive.IsReady && drive.AvailableFreeSpace < high + 64L * 1024 * 1024)
+            {
+                Warn("There may not be enough free space on " + drive.Name + " (" + ContactSheet.Mb(drive.AvailableFreeSpace) + " free; the sheets need up to " +
+                     ContactSheet.Mb(high) + "). Nothing was written.");
+                return;
+            }
+        }
+        catch (Exception) { }
+        sheetBusy = true;
+        string title = grid.Dir ?? "";
+        status.Text = "  Making the contact sheet...";
+        ThreadPool.QueueUserWorkItem(delegate
+        {
+            List<string> written = null;
+            string err = null;
+            var errs = new List<string>();
+            int lastTick = 0;
+            try
+            {
+                written = ContactSheet.Make(paths, title, o, chosen, overwrite, delegate (int k, int n, int pg, int pages)
+                {
+                    if (Environment.TickCount - lastTick < 150 && k < n) return;           // no flood of status updates
+                    lastTick = Environment.TickCount;
+                    Util.Post(this, delegate { status.Text = "  Contact sheet: picture " + k + " of " + n + (pages > 1 ? " (page " + pg + " of " + pages + ")" : "") + "..."; });
+                }, errs);
+            }
+            catch (Exception ex) { err = ex.Message; }
+            Util.Post(this, delegate { SheetDone(written, err, errs); });
+        });
+    }
+
+    void SheetDone(List<string> written, string err, List<string> errs)
+    {
+        sheetBusy = false;
+        int n = written == null ? 0 : written.Count;
+        if (n > 0)
+        {
+            status.Text = "  Saved the contact sheet: " + n + (n == 1 ? " page" : " pages") + "   |   " + written[0] + (n > 1 ? "  ..." : "");
+            if (!viewing && grid.Covers(Path.GetDirectoryName(written[0]))) grid.Rescan();
+        }
+        else UpdateStatus();
+        var msg = new List<string>();
+        if (err != null) msg.Add("The contact sheet could not be finished" + (n > 0 ? " (" + n + " pages were saved)" : "") + ":\n" + err);
+        if (errs.Count > 0)
+        {
+            List<string> e = errs.Count > 8 ? errs.GetRange(0, 8) : errs;
+            msg.Add("These pictures could not be opened (they are marked on the sheet):\n" + string.Join("\n", e) + (errs.Count > 8 ? "\n..." : ""));
+        }
+        if (msg.Count > 0) Warn(string.Join("\n\n", msg));
+    }
+
+    // ---------------------------------------------------------------- lossless JPEG turn (changes files, always asks)
+
+    bool rotateBusy;
+
+    // turns = clockwise quarter turns: the selected JPEG photos (browser) or the photo shown (viewer)
+    void RotateFiles(int turns)
+    {
+        turns &= 3;
+        if (turns == 0 || comparing || rotateBusy) return;
+        var paths = new List<string>();
+        if (viewing) { string p = canvas.CurrentPath; if (p != null) paths.Add(p); }
+        else foreach (int i in grid.SelectedIndices()) if (!grid.Items[i].Offline) paths.Add(grid.Items[i].Path);
+        if (paths.Count == 0) return;
+        List<string> jpegs = paths.FindAll(JpegRotate.IsJpeg);
+        if (jpegs.Count == 0)
+        {
+            Warn("Only JPEG photos can be turned on disk without loss." + (viewing ? "\n\nR and L turn the view; Save as PNG (Ctrl+S) keeps that turn in a lossless PNG copy." : ""));
+            return;
+        }
+        string how = turns == 1 ? "90 degrees clockwise" : turns == 3 ? "90 degrees counter-clockwise" : "180 degrees";
+        string what = jpegs.Count == 1 ? "\"" + Path.GetFileName(jpegs[0]) + "\"" : jpegs.Count + " JPEG photos";
+        string msg = "Turn " + what + " " + how + "?\n\n" +
+                     "This changes " + (jpegs.Count == 1 ? "the file" : "the files") + " on disk, without re-compressing, so no quality is lost: " +
+                     "photos with an orientation tag just get a new tag value, others are turned block by block (only when their size allows it; " +
+                     "otherwise they are left alone). Each new file is checked before it replaces the old one." +
+                     (paths.Count > jpegs.Count ? "\n\n" + (paths.Count - jpegs.Count) + " other selected pictures are not JPEGs and are left alone." : "");
+        if (MessageBox.Show(this, msg, "Turn the file", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+        rotateBusy = true;
+        status.Text = "  Turning " + what + "...";
+        if (viewing) canvas.ShowMessage("Turning " + what + "...");
+        ThreadPool.QueueUserWorkItem(delegate
+        {
+            int done = 0;
+            var errs = new List<string>();
+            foreach (string p in jpegs)
+            {
+                try
+                {
+                    var fi = new FileInfo(p);
+                    long oldSize = fi.Length, oldMod = fi.LastWriteTimeUtc.Ticks;
+                    JpegRotate.Rotate(p, turns);
+                    Marks.Rebind(p, oldSize, oldMod);              // ratings, labels and tags stay with the photo
+                    done++;
+                }
+                catch (Exception ex) { errs.Add(Path.GetFileName(p) + ": " + Util.Why(ex)); }
+            }
+            int d2 = done;
+            Util.Post(this, delegate { RotateDone(d2, errs); });
+        });
+    }
+
+    void RotateDone(int done, List<string> errs)
+    {
+        rotateBusy = false;
+        if (viewing) { canvas.Reload(); if (done > 0) canvas.ShowMessage("Turned and saved (lossless)"); }
+        else if (grid.Dir != null) grid.Rescan();
+        status.Text = "  Turned " + done + (done == 1 ? " photo" : " photos") + " (lossless)" + (errs.Count > 0 ? ", " + errs.Count + " left as they were" : "");
+        if (errs.Count > 0)
+        {
+            List<string> e = errs.Count > 8 ? errs.GetRange(0, 8) : errs;
+            Warn((done > 0 ? "Some photos were left as they were:" : "Nothing was turned:") + "\n\n" + string.Join("\n", e) + (errs.Count > 8 ? "\n..." : ""));
+        }
+    }
+
     void AuditDone(string dest, int pictures, int failed, string err)
     {
         auditBusy = false;
@@ -1027,7 +1352,7 @@ partial class MainForm
     // choosing the current sort again reverses it; date and size start with newest / largest first
     void ChooseSort(int key)
     {
-        bool desc = key == grid.SortKey ? !grid.SortDesc : (key == 1 || key == 2 || key == 5);
+        bool desc = key == grid.SortKey ? !grid.SortDesc : (key == 1 || key == 2 || key == 5 || key == 9);
         grid.SetSort(key, desc);
     }
 
@@ -1059,6 +1384,7 @@ partial class MainForm
             "  Ctrl+A / Ctrl+I         select all / invert the selection",
             "  Mouse wheel             scroll;  Ctrl + wheel or the Size slider: thumbnail size",
             "  Ctrl+F                  filter box (* and ? wildcards, spaces mean AND); Esc clears",
+            "  Alt+P                   preview pane: a large preview and facts about the focused picture, right of the list",
             "  Ctrl+Shift+D            details list (name, type, platform, dimensions, frames, colours, size, date, status);",
             "  Tools > Analyse folder  fills in frames, colours and duplicates in the details list",
             "                          click a column title to sort by it, again to reverse",
@@ -1066,15 +1392,23 @@ partial class MainForm
             "                          (turns off again when you open another folder or drive)",
             "  Ctrl+L                  address bar: type or paste a local path, Enter",
             "  Alt+Left / Alt+Right    back / forward",
+            "  Ctrl+D                  add the open folder to the favourites (or remove it); Go > Favourites, Recent folders",
             "  Alt+Up or Backspace     up one folder",
             "  Ctrl+Z                  undo the last rename, batch rename or move (up to 20 steps)",
+            "  Alt+0 .. Alt+5          rating: 1 to 5 stars (Alt+0 removes it); also in the viewer and slideshow",
+            "  Shift+0 .. Shift+5      colour label: red, yellow, green, blue, purple (Shift+0 removes it)",
+            "  X                       tag / untag;  the Show pull-down lists only tagged, rated or labelled pictures",
+            "                          (marks are kept in marks.tsv next to settings.ini, never in the pictures)",
+            "                          ratings stored in photos by Windows / Lightroom show in silver (read only)",
             "  F2                      rename",
             "  Ctrl+F2                 batch rename the selection (pattern such as holiday_###, with a preview)",
             "  Ctrl+Shift+C            compare the 2 selected pictures side by side (zoom and panning linked;",
             "                          rotate / flip / grid / info apply to both; Esc goes back)",
+            "  Tools > Contact sheet   lossless PNG index sheets of the selection (100 per page, at most 2,000)",
             "  Ctrl+Shift+A            folder audit: an offline HTML report of every picture file in this folder",
             "                          (platform, type, size, colours, duplicates, files that could not be opened)",
             "  Ctrl+C / Ctrl+X / Ctrl+V   copy / cut / paste files (cut + paste moves them; works with Explorer too)",
+            "  Ctrl+Shift+Y / Ctrl+Shift+M   copy / move the selection to a folder (Edit > Copy to / Move to: the last 8)",
             "  Drag selected pictures  onto a folder in the tree (or into Explorer): same drive moves, another",
             "                          drive copies; hold Ctrl to copy, Shift to move",
             "  Drag a folder in the tree   onto another folder: moves / copies it the same way",
@@ -1082,6 +1416,7 @@ partial class MainForm
             "  F5                      refresh (the folder tree and the open folder also refresh by themselves)",
             "  Ctrl+S                  save the selection as lossless PNG",
             "  Ctrl+Shift+S            save every frame of animated GIFs / pages of TIFFs as separate PNGs",
+            "  Ctrl+Shift+R / L        turn the selected JPEG photos on disk, without loss (asks first; also in the viewer)",
             "  F8                      show / hide retro-computer formats",
             "  Right-click             menu: sort, details on tiles, invert selection ...",
             "",
@@ -1106,12 +1441,15 @@ partial class MainForm
             "  W                       glow: off / soft / strong (bright areas light up their surroundings; retro)",
             "  U                       screen curvature: off / slight / strong, darker rounded corners (retro, below 800%)",
             "  G                       pixel grid (at 800% and above)",
+            "  J                       filmstrip: thumbnails of the folder along the bottom; click one to show it",
+            "  Z (hold)                loupe: a magnifier around the pointer, 4 times the current size",
             "  N                       crisp / sharp / smooth enlargement",
             "  I                       info bar (x, y and colour under the pointer)",
             "  E                       EXIF details (camera, exposure, date ...)",
             "  P                       pause / play an animated GIF",
             "  ,  /  .                 previous / next frame of an animated GIF",
             "  S                       slideshow;  Up / Down change the interval",
+            "  Alt+0..5 / Shift+0..5 / X   rate / colour-label / tag the picture (Settings: move on to the next one)",
             "  Ctrl+C                  copy the picture to the clipboard",
             "  Ctrl+S                  save the picture as lossless PNG (first frame of an animation)",
             "  Ctrl+Shift+S            save every frame / page of the picture as separate PNGs",
@@ -1184,6 +1522,90 @@ partial class MainForm
             Recoil.RECOIL.Credits.Trim() + "\n" + Recoil.RECOIL.License + "\n\n" +
             "Press F1 for every key and mouse action.",
             "About RetroGleek", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+
+    // ================================================================ marks: ratings, colour labels, tag
+
+    // Alt+0..5 = rating (kind 1), Shift+0..5 = colour label (kind 2), top row or keypad; kind 0 = not a mark key
+    static int MarkKey(Keys keyData, out int kind)
+    {
+        kind = 0;
+        bool ctrl = (keyData & Keys.Control) != 0, alt = (keyData & Keys.Alt) != 0, shift = (keyData & Keys.Shift) != 0;
+        if (ctrl || alt == shift) return -1;
+        Keys k = keyData & Keys.KeyCode;
+        int d = k >= Keys.D0 && k <= Keys.D5 ? (int)k - (int)Keys.D0 : k >= Keys.NumPad0 && k <= Keys.NumPad5 ? (int)k - (int)Keys.NumPad0 : -1;
+        if (d < 0) return -1;
+        kind = alt ? 1 : 2;
+        return d;
+    }
+
+    // what a mark applies to in the browser: the selected pictures, or the focused one
+    List<string> MarkTargets()
+    {
+        var paths = new List<string>();
+        foreach (int i in grid.SelectedIndices()) if (!grid.Items[i].Offline) paths.Add(grid.Items[i].Path);
+        int f = grid.FocusIndex;
+        if (paths.Count == 0 && f >= 0 && f < grid.Items.Count && !grid.Items[f].Offline) paths.Add(grid.Items[f].Path);
+        return paths;
+    }
+
+    // stars / label: -1 = leave as it is. toggleTag: tag them all, or untag them all if they all were tagged.
+    void DoMark(int stars, int label, bool toggleTag)
+    {
+        var paths = new List<string>();
+        if (viewing) { string p = canvas.CurrentPath; if (p != null && File.Exists(p)) paths.Add(p); }
+        else paths = MarkTargets();
+        if (paths.Count == 0) return;
+        bool? tag = null;
+        if (toggleTag)
+        {
+            bool allTagged = true;
+            foreach (string p in paths) { Mark m = Marks.ForFile(p); if (m == null || !m.Tag) { allTagged = false; break; } }
+            tag = !allTagged;
+        }
+        string focusBefore = !viewing && grid.FocusIndex >= 0 && grid.FocusIndex < grid.Items.Count ? grid.Items[grid.FocusIndex].Path : null;
+        Marks.Set(paths, stars, label, tag);
+        string what = toggleTag ? (tag.Value ? "Tagged" : "Tag removed")
+                    : stars >= 0 ? (stars == 0 ? "Rating removed" : "Rating: " + Marks.StarText(stars))
+                    : label == 0 ? "Colour label removed" : "Colour label: " + Marks.LabelNames[label];
+        canvas.MarksChanged();
+        grid.MarksChanged();
+        UpdatePreview();
+        if (viewing)
+        {
+            canvas.ShowMessage(what);
+            if (autoAdvance) canvas.Next();
+        }
+        else
+        {
+            // auto-advance; if the Show filter just took the picture out of the list, the next one is already in its place
+            bool stillThere = focusBefore != null && grid.FocusIndex >= 0 && grid.FocusIndex < grid.Items.Count
+                              && string.Equals(grid.Items[grid.FocusIndex].Path, focusBefore, StringComparison.OrdinalIgnoreCase);
+            if (autoAdvance && paths.Count == 1 && stillThere) grid.SelectNext();
+            UpdateStatus();
+            status.Text = "  " + what + (paths.Count > 1 ? " (" + paths.Count + " pictures)" : "") + "   |   " + status.Text.Trim();
+        }
+    }
+
+    void SetShow(int mode)
+    {
+        if (showCombo.SelectedIndex != mode) showCombo.SelectedIndex = mode;     // its handler sets grid.ShowMode
+        else grid.ShowMode = mode;
+        UpdateStatus();
+    }
+
+    void ClearTags()
+    {
+        var paths = new List<string>();
+        foreach (Item it in grid.Items) { Mark m = grid.MarkOf(it); if (m != null && m.Tag) paths.Add(it.Path); }
+        if (paths.Count == 0) return;
+        if (MessageBox.Show(this, "Remove the tag from the " + paths.Count + (paths.Count == 1 ? " tagged picture" : " tagged pictures") + " shown here?\n\n(Ratings and colour labels stay.)",
+                            "Clear tags", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+        Marks.Set(paths, -1, -1, false);
+        grid.MarksChanged();
+        canvas.MarksChanged();
+        UpdatePreview();
+        UpdateStatus();
     }
 
     // ================================================================ screen effect presets (Effects menu, Ctrl+1 .. Ctrl+9)
@@ -1366,6 +1788,12 @@ partial class MainForm
             delegate { return viewing ? canvas.HasPicture : grid.SelectedIndices().Count > 0; }, null);
         MenuKey(file, "Export all &frames as PNG...", "Ctrl+Shift+S", Keys.Control | Keys.Shift | Keys.S,
             delegate { return viewing ? canvas.HasPicture : grid.SelectedIndices().Count > 0; }, null);
+        MenuEntry(file, "Save the &turn into the JPEG (lossless)...", "", delegate
+            {
+                string sp; int st; bool sfx, sfy;
+                if (canvas.GetSaveSource(out sp, out st, out sfx, out sfy)) RotateFiles(st);
+            },
+            delegate { return viewing && canvas.ExtraTurns && canvas.CurrentPath != null && JpegRotate.IsJpeg(canvas.CurrentPath) && !rotateBusy; }, null);
         MenuSep(file);
         MenuEntry(file, "E&xit", "Alt+F4", delegate { Close(); }, null, null);
         LastEntry.InCompare = true;
@@ -1379,8 +1807,38 @@ partial class MainForm
         LastEntry.Text = delegate { return viewing ? "&Copy picture" : "&Copy"; };
         MenuKey(edit, "Cu&t", "Ctrl+X", Keys.Control | Keys.X, hasSel, null);
         MenuKey(edit, "&Paste", "Ctrl+V", Keys.Control | Keys.V, delegate { return !viewing && ClipHasFiles(); }, null);
+        Func<bool> canSend = delegate { return viewing ? canvas.CurrentPath != null : hasSel(); };
+        for (int tm = 0; tm < 2; tm++)
+        {
+            bool mv = tm == 1;
+            ToolStripMenuItem sendMenu = MenuSub(edit, mv ? "&Move to" : "C&opy to", canSend);
+            MenuKey(sendMenu, "&Choose a folder...", mv ? "Ctrl+Shift+M" : "Ctrl+Shift+Y", Keys.Control | Keys.Shift | (mv ? Keys.M : Keys.Y), null, null);
+            for (int ri = 0; ri < MaxRecentDest; ri++)
+            {
+                int slot = ri;
+                MenuEntry(sendMenu, "Recent " + (slot + 1), "", delegate { if (slot < recentDest.Count) TransferTo(mv, recentDest[slot]); }, null, null);
+                LastEntry.Show = delegate { return slot < recentDest.Count; };
+                LastEntry.Text = delegate { return slot < recentDest.Count ? "&" + (slot + 1) + "  " + recentDest[slot].Replace("&", "&&") : ""; };
+            }
+        }
         MenuKey(edit, "&Rename...", "F2", Keys.F2, delegate { return !viewing && (lastPane == tree ? IsPlainFolder(tree.SelectedNode) : grid.SelectedIndices().Count == 1); }, null);
         MenuKey(edit, "&Delete (to Recycle Bin)", "Del", Keys.Delete, delegate { return viewing ? canvas.CurrentPath != null : hasSel(); }, null);
+        ToolStripMenuItem turnMenu = MenuSub(edit, "Turn the file (lossless &JPEG)", delegate { return !rotateBusy && (viewing ? canvas.CurrentPath != null : grid.SelectedIndices().Count > 0); });
+        MenuKey(turnMenu, "&Clockwise", "Ctrl+Shift+R", Keys.Control | Keys.Shift | Keys.R, null, null);
+        MenuKey(turnMenu, "C&ounter-clockwise", "Ctrl+Shift+L", Keys.Control | Keys.Shift | Keys.L, null, null);
+        MenuEntry(turnMenu, "&180 degrees", "", delegate { RotateFiles(2); }, null, null);
+        MenuSep(edit);
+        // marks: the picture in the viewer, or the selected pictures (kept in marks.tsv, never in the pictures)
+        Func<bool> canMark = delegate { return viewing ? canvas.CurrentPath != null : MarkTargets().Count > 0; };
+        ToolStripMenuItem rate = MenuSub(edit, "Rati&ng", canMark);
+        for (int ri = 0; ri <= 5; ri++)
+            MenuKey(rate, ri == 0 ? "&No rating" : "&" + ri + "  " + Marks.StarText(ri), "Alt+" + ri, Keys.Alt | (Keys)((int)Keys.D0 + ri), null, null);
+        ToolStripMenuItem lab = MenuSub(edit, "Colour &label", canMark);
+        for (int li = 0; li <= 5; li++)
+            MenuKey(lab, "&" + li + "  " + Marks.LabelNames[li], "Shift+" + li, Keys.Shift | (Keys)((int)Keys.D0 + li), null, null);
+        MenuKey(edit, "Ta&g / untag", "X", Keys.X, canMark, null);
+        MenuEntry(edit, "Sel&ect tagged", "", delegate { grid.SelectTagged(); }, delegate { return !viewing && grid.CountTagged() > 0; }, null);
+        MenuEntry(edit, "Clear tags in this &view...", "", delegate { ClearTags(); }, delegate { return !viewing && grid.CountTagged() > 0; }, null);
         MenuSep(edit);
         MenuEntry(edit, "Select &all", "Ctrl+A", delegate { grid.SelectAllItems(); }, hasItems, null);
         MenuEntry(edit, "&Invert selection", "Ctrl+I", delegate { grid.InvertSelection(); }, hasItems, null);
@@ -1402,7 +1860,7 @@ partial class MainForm
         MenuKey(view, "&Refresh", "F5", Keys.F5, browsing, null);
         MenuSep(view);
         ToolStripMenuItem sortBy = MenuSub(view, "&Sort by", browsing);
-        string[] sortNames = { "&Name", "&Date modified", "&Size", "&Type", "&Platform", "D&imensions", "&Frames", "&Colours", "S&tatus" };
+        string[] sortNames = { "&Name", "&Date modified", "&Size", "&Type", "&Platform", "D&imensions", "&Frames", "&Colours", "S&tatus", "R&ating", "&Label" };
         for (int i = 0; i < sortNames.Length; i++)
         {
             int key = i;
@@ -1410,6 +1868,13 @@ partial class MainForm
         }
         MenuSep(sortBy);
         MenuEntry(sortBy, "&Reverse order", "", delegate { grid.SetSort(grid.SortKey, !grid.SortDesc); }, null, delegate { return grid.SortDesc; });
+        ToolStripMenuItem showMenu = MenuSub(view, "S&how (marks)", browsing);
+        for (int shi = 0; shi < ThumbGrid.ShowNames.Length; shi++)
+        {
+            int mode = shi;
+            if (shi == 3 || shi == 9) MenuSep(showMenu);
+            MenuEntry(showMenu, ThumbGrid.ShowNames[shi], "", delegate { SetShow(mode); }, null, delegate { return grid.ShowMode == mode; });
+        }
         MenuKey(view, "&Details list", "Ctrl+Shift+D", Keys.Control | Keys.Shift | Keys.D, browsing, delegate { return grid.DetailsMode; });
         MenuEntry(view, "Show &details on tiles", "", delegate { grid.ShowDetails = !grid.ShowDetails; }, delegate { return !viewing && !grid.DetailsMode; }, delegate { return grid.ShowDetails; });
         MenuSep(view);
@@ -1426,6 +1891,9 @@ partial class MainForm
         MenuKey(view, "&Info bar", "I", Keys.I, inViewer, delegate { return canvas.InfoOn; });
         MenuKey(view, "&EXIF details", "E", Keys.E, inViewer, delegate { return canvas.ExifOn; });
         MenuKey(view, "Pixel &grid (800% and above)", "G", Keys.G, inViewer, delegate { return canvas.GridOn; });
+        MenuEntry(view, "Loupe: hold Z over the picture (4 times the current size)", "Z", delegate { }, delegate { return false; }, null);
+        MenuKey(view, "Fil&mstrip", "J", Keys.J, inViewer, delegate { return canvas.Filmstrip; });
+        MenuKey(view, "&Preview pane", "Alt+P", Keys.Alt | Keys.P, browsing, delegate { return preview.Visible; });
 
         // ---- Effects: screen effects for retro pictures (display only; remembered in settings.ini)
         ToolStripMenuItem effects = MenuTop("Effe&cts");
@@ -1503,6 +1971,28 @@ partial class MainForm
         MenuKey(go, "&Up one folder", "Alt+Up", Keys.Alt | Keys.Up, browsing, null);
         MenuKey(go, "&Address bar", "Ctrl+L", Keys.Control | Keys.L, browsing, null);
         MenuSep(go);
+        ToolStripMenuItem favMenu = MenuSub(go, "Fa&vourites", null);
+        MenuKey(favMenu, "&Add this folder", "Ctrl+D", Keys.Control | Keys.D, delegate { return grid.Dir != null; }, null);
+        LastEntry.Text = delegate { return IsFavourite(grid.Dir) ? "&Remove this folder from the favourites" : "&Add this folder"; };
+        MenuSep(favMenu);
+        for (int fi = 0; fi < MaxFavourites; fi++)
+        {
+            int slot = fi;
+            MenuEntry(favMenu, "Favourite " + (slot + 1), "", delegate { if (slot < favourites.Count) OpenFolderShortcut(favourites[slot]); }, null, null);
+            LastEntry.Show = delegate { return slot < favourites.Count; };
+            LastEntry.Text = delegate { return slot < favourites.Count ? (slot < 9 ? "&" + (slot + 1) + "  " : "    ") + FavText(favourites[slot]).Replace("&", "&&") + "    " + favourites[slot].Replace("&", "&&") : ""; };
+        }
+        MenuEntry(favMenu, "(no favourites yet: Ctrl+D adds the open folder)", "", delegate { }, delegate { return false; }, null);
+        LastEntry.Show = delegate { return favourites.Count == 0; };
+        ToolStripMenuItem recMenu = MenuSub(go, "Recen&t folders", delegate { return recentFolders.Count > 0; });
+        for (int ri = 0; ri < MaxRecentFolders; ri++)
+        {
+            int slot = ri;
+            MenuEntry(recMenu, "Recent " + (slot + 1), "", delegate { if (slot < recentFolders.Count) OpenFolderShortcut(recentFolders[slot]); }, null, null);
+            LastEntry.Show = delegate { return slot < recentFolders.Count; };
+            LastEntry.Text = delegate { return slot < recentFolders.Count ? "&" + ((slot + 1) % 10) + "  " + recentFolders[slot].Replace("&", "&&") : ""; };
+        }
+        MenuSep(go);
         Func<bool> canStep = delegate { return viewing && canvas.FileCount > 1; };
         MenuKey(go, "&Previous picture", "Left", Keys.Left, canStep, null);
         MenuKey(go, "&Next picture", "Right", Keys.Right, canStep, null);
@@ -1520,6 +2010,8 @@ partial class MainForm
             delegate { return grid.Dir != null && !auditBusy; }, null);
         MenuEntry(tools, "Folder audit report, &no thumbnails (smaller)...", "", delegate { DoAudit(false); },
             delegate { return grid.Dir != null && !auditBusy; }, null);
+        MenuEntry(tools, "&Contact sheet (lossless PNG)...", "", delegate { DoContactSheet(); },
+            delegate { return !viewing && !sheetBusy && grid.SelectedIndices().Count > 0; }, null);
         MenuKey(tools, "Batch &rename...", "Ctrl+F2", Keys.Control | Keys.F2, delegate { return !viewing && grid.SelectedIndices().Count > 0; }, null);
         MenuSep(tools);
         MenuKey(tools, "&Slideshow", "S", Keys.S, delegate { return viewing && canvas.FileCount > 1; }, delegate { return canvas.Slideshow; });
@@ -1535,6 +2027,7 @@ partial class MainForm
         MenuEntry(settings, "Show &retro-computer formats (RECOIL)", "F8", delegate { ToggleRetro(); }, null, delegate { return Retro.Enabled; });
         MenuSep(settings);
         MenuEntry(settings, "&Fit to screen", "F", delegate { canvas.ToggleFitLock(); }, null, delegate { return canvas.FitLock; });
+        MenuEntry(settings, "Move to the &next picture after marking", "", delegate { autoAdvance = !autoAdvance; }, null, delegate { return autoAdvance; });
         MenuEntry(settings, "&Checkerboard behind transparency", "B", delegate { canvas.ToggleChecker(); }, null, delegate { return canvas.Checker; });
         ToolStripMenuItem pix = MenuSub(settings, "&Enlarged pixels", null);
         MenuEntry(pix, "&Automatic (retro sharp, photos smooth)", "N cycles", delegate { canvas.PixMode = 0; }, null, delegate { return canvas.PixMode == 0; });
@@ -1622,11 +2115,16 @@ partial class MainForm
         if (k == Keys.F1) { ShowHelp(); return true; }
         int preset = PresetKey(keyData);
         if (preset > 0) { ApplyPreset(preset - 1); return true; }
-        if (comparing) return CompareKey(keyData);
+        int markKind, markValue = MarkKey(keyData, out markKind);
+        if (comparing) return markKind != 0 || CompareKey(keyData);       // marks are given in the browser or the viewer
         if (ctrl && shift && k == Keys.C && !viewing) { StartCompare(); return true; }
         if (ctrl && shift && k == Keys.S) { DoExportFrames(); return true; }
         if (ctrl && shift && k == Keys.A) { DoAudit(true); return true; }
         if (ctrl && shift && k == Keys.D && !viewing) { SetDetailsView(!grid.DetailsMode); return true; }
+        if (ctrl && !shift && !alt && k == Keys.D) { ToggleFavourite(grid.Dir); return true; }
+        if (ctrl && shift && !alt && (k == Keys.R || k == Keys.L)) { RotateFiles(k == Keys.R ? 1 : 3); return true; }   // the file, not the view
+        if (ctrl && shift && k == Keys.Y && !alt) { TransferTo(false, null); return true; }
+        if (ctrl && shift && k == Keys.M && !alt) { TransferTo(true, null); return true; }
         if (ctrl && k == Keys.S) { if (viewing) SaveCurrentPng(); else DoSavePng(); return true; }
         if (ctrl && k == Keys.O) { OpenDialog(); return true; }
 
@@ -1642,6 +2140,8 @@ partial class MainForm
             }
             if (ctrl && k == Keys.C) { CopyCurrentPicture(); return true; }
             if (k == Keys.Delete && !ctrl) { DeleteCurrentPicture(); return true; }
+            if (markKind != 0) { DoMark(markKind == 1 ? markValue : -1, markKind == 2 ? markValue : -1, false); return true; }
+            if (k == Keys.X && !ctrl && !alt && !shift) { DoMark(-1, -1, true); return true; }
             if (canvas.HandleKey(keyData)) return true;
         }
         else
@@ -1666,6 +2166,9 @@ partial class MainForm
             else
             {
                 bool tr = lastPane == tree;
+                if (markKind != 0 && (!tr || fromMenu)) { DoMark(markKind == 1 ? markValue : -1, markKind == 2 ? markValue : -1, false); return true; }
+                if (alt && !ctrl && !shift && k == Keys.P) { SetPreview(!preview.Visible); return true; }
+                if (k == Keys.X && !ctrl && !alt && !shift && (!tr || fromMenu)) { DoMark(-1, -1, true); return true; }
                 switch (k)
                 {
                     case Keys.F2:

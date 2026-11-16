@@ -27,6 +27,9 @@ sealed class AuditEntry
     public string Name, Ext, Kind, Status, Platform, Format, Error, Hash, DupOf, Thumb;
     public long Size, Modified;            // Modified: milliseconds since 1970 (UTC), for the page's own date display
     public int W, H, Frames = 1, Colours = -1;
+    public int Stars, Label;               // your marks (marks.tsv): 0..5 stars, colour label 0..5
+    public bool Tag;
+    public int FileStars;                  // the rating stored in the file itself (Windows, Lightroom ...), 0 = none
 }
 
 // Examines every picture file in one folder (not subfolders) and writes a self-contained HTML page about them.
@@ -82,6 +85,8 @@ static class FolderAudit
             Modified = (long)(fi.LastWriteTimeUtc - Epoch).TotalMilliseconds,
             Kind = native ? "Standard" : generic ? "Retro (generic extension)" : "Retro"
         };
+        Mark mk = Marks.Get(path, fi.Length, fi.LastWriteTimeUtc.Ticks);          // ratings, labels and tags
+        if (mk != null) { e.Stars = mk.Stars; e.Label = mk.Label; e.Tag = mk.Tag; }
         if ((fi.Attributes & Util.CloudMask) != 0)
         {
             if (generic) return null;
@@ -108,6 +113,7 @@ static class FolderAudit
                         if (g == FrameDimension.Page.Guid) e.Frames = img.GetFrameCount(FrameDimension.Page);
                     }
                     e.Thumb = Thumb(img, thumbs);                         // drawing it decodes the first frame for real
+                    if (FileRating.MayHold(path)) e.FileStars = FileRating.Read(path, img);
                     var b = img as Bitmap;
                     if (b != null && (long)e.W * e.H <= MaxColourPixels) e.Colours = CountColours(b);
                 }
@@ -239,7 +245,7 @@ static class FolderAudit
     public static string Csv(List<AuditEntry> list)
     {
         var sb = new System.Text.StringBuilder();
-        sb.Append("Name,Type,Kind,Platform,Status,Size (bytes),Width,Height,Frames,Colours,Modified,SHA-256,Notes\r\n");
+        sb.Append("Name,Type,Kind,Platform,Status,Size (bytes),Width,Height,Frames,Colours,Modified,SHA-256,Notes,Rating,Label,Tagged,Rating source\r\n");
         foreach (AuditEntry e in list)
         {
             string note = (e.DupOf != null ? "Duplicate of " + e.DupOf + (e.Error != null ? ". " : "") : "") + (e.Error ?? "");
@@ -247,7 +253,9 @@ static class FolderAudit
             string[] f =
             {
                 e.Name, e.Ext, e.Kind, e.Platform ?? "", e.Status, N(e.Size), e.W > 0 ? N(e.W) : "", e.H > 0 ? N(e.H) : "",
-                e.W > 0 ? N(e.Frames) : "", e.Colours < 0 ? "" : N(e.Colours), when, e.Hash ?? "", note
+                e.W > 0 ? N(e.Frames) : "", e.Colours < 0 ? "" : N(e.Colours), when, e.Hash ?? "", note,
+                e.Stars > 0 ? N(e.Stars) : e.FileStars > 0 ? N(e.FileStars) : "", e.Label > 0 ? Marks.LabelNames[e.Label] : "", e.Tag ? "yes" : "",
+                e.Stars > 0 ? "RetroGleek" : e.FileStars > 0 ? "file" : ""
             };
             for (int i = 0; i < f.Length; i++)
             {
@@ -299,7 +307,9 @@ static class FolderAudit
                 .Append(",\"s\":").Append(N(e.Size)).Append(",\"m\":").Append(N(e.Modified))
                 .Append(",\"w\":").Append(N(e.W)).Append(",\"h\":").Append(N(e.H)).Append(",\"f\":").Append(N(e.Frames))
                 .Append(",\"c\":").Append(N(e.Colours)).Append(",\"hash\":").Append(J(e.Hash)).Append(",\"dup\":").Append(J(e.DupOf))
-                .Append(",\"err\":").Append(J(e.Error)).Append(",\"t\":").Append(J(e.Thumb)).Append("}");
+                .Append(",\"err\":").Append(J(e.Error)).Append(",\"t\":").Append(J(e.Thumb))
+                .Append(",\"r\":").Append(N(e.Stars)).Append(",\"l\":").Append(J(e.Label > 0 ? Marks.LabelNames[e.Label] : ""))
+                .Append(",\"tg\":").Append(e.Tag ? "1" : "0").Append(",\"rf\":").Append(N(e.FileStars)).Append("}");
         }
         data.Append("]");
 
@@ -322,9 +332,14 @@ static class FolderAudit
           .Append("<select id='tf'><option value=''>All file types</option></select>")
           .Append("<select id='kf'><option value=''>Standard and retro</option><option>Standard</option><option>Retro</option><option>Retro (generic extension)</option></select>")
           .Append("<select id='sf'><option value=''>Any status</option><option>OK</option><option value='Failed'>Could not be opened</option><option>Cloud-only</option><option value='Duplicate'>Duplicates</option></select>")
+          .Append("<select id='mf'><option value=''>Any marks</option><option value='tag'>Tagged</option><option value='rated'>Rated</option>")
+          .Append("<option value='r1'>&#9733; or more</option><option value='r2'>&#9733;&#9733; or more</option><option value='r3'>&#9733;&#9733;&#9733; or more</option>")
+          .Append("<option value='r4'>&#9733;&#9733;&#9733;&#9733; or more</option><option value='r5'>&#9733;&#9733;&#9733;&#9733;&#9733;</option>")
+          .Append("<option value='l:Red'>Red label</option><option value='l:Yellow'>Yellow label</option><option value='l:Green'>Green label</option>")
+          .Append("<option value='l:Blue'>Blue label</option><option value='l:Purple'>Purple label</option><option value='none'>No marks</option></select>")
           .Append("<button id='reset' type='button'>Clear</button><button id='csv' type='button'>Download CSV</button><span id='count'></span></section>\n");
         sb.Append(thumbs ? "<table id='list'><thead>" : "<table id='list' class='nothumbs'><thead>");
-        sb.Append("<tr><th></th><th data-k='n'>Name</th><th data-k='e'>Type</th><th data-k='p'>Platform</th>")
+        sb.Append("<tr><th></th><th data-k='n'>Name</th><th data-k='r'>Rating</th><th data-k='l'>Label</th><th data-k='tg'>Tag</th><th data-k='e'>Type</th><th data-k='p'>Platform</th>")
           .Append("<th data-k='st'>Status</th><th data-k='s'>Size</th><th data-k='px'>Dimensions</th><th data-k='f'>Frames</th>")
           .Append("<th data-k='c'>Colours</th><th data-k='m'>Modified</th><th data-k='hash'>SHA-256</th><th data-k='note'>Notes</th></tr></thead><tbody id='tb'></tbody></table>\n");
         sb.Append("<script>\nvar D=").Append(data.ToString()).Append(";\nvar SKIPPED=").Append(N(skipped)).Append(";\n").Append(Script).Append("</script>\n</body></html>\n");
@@ -369,6 +384,8 @@ td.name{color:#fff;word-break:break-all}td.note{color:#aaa;max-width:340px}
 tr.st-Failed td.status,tr.st-Failed td.note{color:#ff8c5a}
 tr.st-Cloudonly td.status{color:#8cb4ff}
 tr.st-OK td.status{color:#7fd17f}
+td.stars{color:#ffcd46;white-space:nowrap}td.stars.file{color:#c8c8c8}td.tag{color:#3c82e6;text-align:center}
+td.lab-Red{color:#e14646}td.lab-Yellow{color:#ebc83c}td.lab-Green{color:#55b95f}td.lab-Blue{color:#4687eb}td.lab-Purple{color:#a569d7}
 ";
 
     const string Script = @"
@@ -376,16 +393,20 @@ function $(id){return document.getElementById(id);}
 function fmtSize(b){if(b<1024)return b+' B';if(b<1048576)return (b/1024).toFixed(1)+' KB';if(b<1073741824)return (b/1048576).toFixed(2)+' MB';return (b/1073741824).toFixed(2)+' GB';}
 function two(x){return (x<10?'0':'')+x;}
 function fmtDate(ms){var d=new Date(ms);return d.getFullYear()+'-'+two(d.getMonth()+1)+'-'+two(d.getDate())+' '+two(d.getHours())+':'+two(d.getMinutes());}
-D.forEach(function(r){r.px=r.w*r.h;r.p=r.p||'';r.note=(r.dup?'Duplicate of '+r.dup+(r.err?'. ':''):'')+(r.err||'');});
+D.forEach(function(r){r.px=r.w*r.h;r.p=r.p||'';r.note=(r.dup?'Duplicate of '+r.dup+(r.err?'. ':''):'')+(r.err||'');r.r=r.r||0;r.l=r.l||'';r.tg=r.tg||0;r.src=r.r?'RetroGleek':'';if(!r.r&&r.rf){r.r=r.rf;r.src='file';}});
+function stars(n){var s='';for(var i=0;i<n;i++)s+='\u2605';return s;}
 var sortKey='n',sortDir=1;
 function fill(id,key){var seen={},vals=[];D.forEach(function(r){var v=r[key];if(v&&!seen[v]){seen[v]=1;vals.push(v);}});
  vals.sort(function(a,b){return a.localeCompare(b,undefined,{sensitivity:'base'});});
  var s=$(id);vals.forEach(function(v){var o=document.createElement('option');o.value=v;o.textContent=v;s.appendChild(o);});}
 fill('pf','p');fill('tf','e');
+function marked(r,mf){if(!mf)return true;if(mf==='tag')return r.tg===1;if(mf==='rated')return r.r>0;if(mf==='none')return !r.r&&!r.l&&!r.tg;
+ if(mf.charAt(0)==='r')return r.r>=parseInt(mf.substring(1),10);if(mf.indexOf('l:')===0)return r.l===mf.substring(2);return true;}
 function matches(r){var q=$('q').value.toLowerCase().trim(),pf=$('pf').value,tf=$('tf').value,sf=$('sf').value,kf=$('kf').value;
+ if(!marked(r,$('mf').value))return false;
  if(pf&&r.p!==pf)return false;if(tf&&r.e!==tf)return false;if(kf&&r.k!==kf)return false;
  if(sf==='Duplicate'){if(!r.dup)return false;}else if(sf&&r.st!==sf)return false;
- if(q){var hay=(r.n+' '+r.e+' '+r.p+' '+r.st+' '+(r.fmt||'')+' '+r.note).toLowerCase(),parts=q.split(/\s+/);
+ if(q){var hay=(r.n+' '+r.e+' '+r.p+' '+r.st+' '+(r.fmt||'')+' '+r.note+' '+r.l+(r.tg?' tagged':'')).toLowerCase(),parts=q.split(/\s+/);
   for(var i=0;i<parts.length;i++)if(hay.indexOf(parts[i])<0)return false;}
  return true;}
 function cmp(a,b){var x=a[sortKey],y=b[sortKey];if(x===null||x===undefined)x='';if(y===null||y===undefined)y='';
@@ -399,7 +420,7 @@ function render(){var rows=shown(),tb=$('tb'),frag=document.createDocumentFragme
   var td=document.createElement('td');td.className='th';
   if(r.t){var im=document.createElement('img');im.src='data:image/png;base64,'+r.t;im.alt='';td.appendChild(im);}
   tr.appendChild(td);
-  cell(tr,r.n,'name');cell(tr,r.e);cell(tr,r.p);cell(tr,r.st==='Failed'?'Could not be opened':r.st,'status');
+  cell(tr,r.n,'name');cell(tr,stars(r.r),r.src==='file'?'stars file':'stars',r.r?r.r+' of 5'+(r.src==='file'?' (stored in the file)':''):'');cell(tr,r.l,r.l?'lab-'+r.l:'');cell(tr,r.tg?'\u2714':'','tag');cell(tr,r.e);cell(tr,r.p);cell(tr,r.st==='Failed'?'Could not be opened':r.st,'status');
   cell(tr,fmtSize(r.s),'num',r.s+' bytes');cell(tr,r.w?r.w+' x '+r.h:'','num');cell(tr,r.w?String(r.f):'','num');
   cell(tr,r.c<0?'':(r.c>=65536?'65,536+':String(r.c)),'num');cell(tr,fmtDate(r.m),'num');
   cell(tr,r.hash?r.hash.substring(0,12):'','mono',r.hash||'');cell(tr,r.note,'note');
@@ -409,8 +430,8 @@ function render(){var rows=shown(),tb=$('tb'),frag=document.createDocumentFragme
   th.className=th.getAttribute('data-k')===sortKey?(sortDir>0?'asc':'desc'):'';});}
 Array.prototype.forEach.call(document.querySelectorAll('th[data-k]'),function(th){th.onclick=function(){
  var k=th.getAttribute('data-k');if(k===sortKey)sortDir=-sortDir;else{sortKey=k;sortDir=1;}render();};});
-['q','pf','tf','kf','sf'].forEach(function(id){$(id).oninput=render;$(id).onchange=render;});
-function set(pf,tf,sf){$('q').value='';$('pf').value=pf||'';$('tf').value=tf||'';$('sf').value=sf||'';$('kf').value='';render();}
+['q','pf','tf','kf','sf','mf'].forEach(function(id){$(id).oninput=render;$(id).onchange=render;});
+function set(pf,tf,sf,mf){$('q').value='';$('pf').value=pf||'';$('tf').value=tf||'';$('sf').value=sf||'';$('kf').value='';$('mf').value=mf||'';render();}
 $('reset').onclick=function(){set();};
 function card(v,l,bad,f){var d=document.createElement('div');d.className='card'+(bad&&v>0?' bad':'');
  d.innerHTML='<div class=v></div><div class=l></div>';d.firstChild.textContent=v;d.lastChild.textContent=l;d.onclick=f;$('cards').appendChild(d);}
@@ -421,6 +442,9 @@ card(count(function(r){return r.st==='Failed';}),'could not be opened',true,func
 card(count(function(r){return r.st==='Cloud-only';}),'cloud-only (not opened)',false,function(){set('','','Cloud-only');});
 card(count(function(r){return !!r.dup;}),'duplicates',false,function(){set('','','Duplicate');});
 card(count(function(r){return r.k!=='Standard';}),'retro files',false,function(){set();$('kf').value='Retro';render();});
+var nTag=count(function(r){return r.tg===1;}),nRated=count(function(r){return r.r>0;});
+if(nTag>0)card(nTag,'tagged',false,function(){set('','','','tag');});
+if(nRated>0)card(nRated,'rated',false,function(){set('','','','rated');});
 if(SKIPPED>0)card(SKIPPED,'generic-extension files that are not pictures (not listed)',false,function(){});
 var NOPLAT='(unknown: could not be opened)';
 function summary(id,key,label){var groups={},order=[];D.forEach(function(r){var v=r[key]||(key==='p'?NOPLAT:'(none)');
@@ -431,8 +455,8 @@ function summary(id,key,label){var groups={},order=[];D.forEach(function(r){var 
   tr.onclick=function(){if(key==='p'){if(v===NOPLAT)set('','','Failed');else set(v);}else set('',v);};t.appendChild(tr);});}
 summary('byp','p');summary('byt','e');
 function csvq(v){v=String(v===null||v===undefined?'':v);return /[\x22,\r\n]/.test(v)?'\x22'+v.replace(/\x22/g,'\x22\x22')+'\x22':v;}
-$('csv').onclick=function(){var lines=['Name,Type,Kind,Platform,Status,Size (bytes),Width,Height,Frames,Colours,Modified,SHA-256,Notes'];
- shown().forEach(function(r){lines.push([r.n,r.e,r.k,r.p,r.st,r.s,r.w||'',r.h||'',r.w?r.f:'',r.c<0?'':r.c,fmtDate(r.m),r.hash||'',r.note].map(csvq).join(','));});
+$('csv').onclick=function(){var lines=['Name,Type,Kind,Platform,Status,Size (bytes),Width,Height,Frames,Colours,Modified,SHA-256,Notes,Rating,Label,Tagged,Rating source'];
+ shown().forEach(function(r){lines.push([r.n,r.e,r.k,r.p,r.st,r.s,r.w||'',r.h||'',r.w?r.f:'',r.c<0?'':r.c,fmtDate(r.m),r.hash||'',r.note,r.r||'',r.l,r.tg?'yes':'',r.src].map(csvq).join(','));});
  var blob=new Blob(['\ufeff'+lines.join('\r\n')],{type:'text/csv'}),a=document.createElement('a');
  a.href=URL.createObjectURL(blob);a.download='retrogleek-audit.csv';document.body.appendChild(a);a.click();a.remove();};
 render();

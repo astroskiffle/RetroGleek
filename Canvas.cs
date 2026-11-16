@@ -43,6 +43,19 @@ sealed class Canvas : Control
     bool showGrid;                         // G: pixel grid (drawn at 8x and above)
     int pixMode;                           // N: 0 = auto (retro pictures sharp, photos smooth), 1 = crisp, 2 = smooth, 3 = sharp
     bool mouseIn;                          // the pointer is over the picture area
+    bool loupe;                            // Z held: a magnifier around the pointer
+
+    // ---- filmstrip (J): a row of small thumbnails of the folder along the bottom; click one to show it.
+    // Hidden during a slideshow. The picture area is the window minus the strip.
+    bool strip;
+    ThumbService stripSvc;
+    readonly ThumbCache stripCache = new ThumbCache();
+    readonly Dictionary<string, long> stripStamps = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+    Control stripHost;
+    public bool Filmstrip { get { return strip; } set { strip = value; if (HasImage) { Refit(); Clamp(); } Invalidate(); } }
+    bool StripShown { get { return strip && !slideshow && files.Count > 1; } }
+    int StripH { get { return StripShown ? Util.S(84) : 0; } }
+    int ViewH { get { return Math.Max(1, ClientSize.Height - StripH); } }      // the height the picture is shown in
     Point mousePt;
     int lhx = -2, lhy = -2;                // last pixel reported under the pointer
     string flash;
@@ -209,6 +222,7 @@ sealed class Canvas : Control
         foreach (Pic p in cache.Values) p.Dispose();
         cache.Clear();
         DropSharp(); DropFx(); DropComposite(); DropGlow();
+        stripCache.Clear(); stripStamps.Clear();
         cur = null; want = null; notice = null;
         files = new List<string>(); idx = -1;
         Invalidate();
@@ -268,6 +282,38 @@ sealed class Canvas : Control
     public string CurrentPath { get { return cur != null ? cur.FullPath : null; } }
     public string Platform { get { return HasImage ? cur.Note : null; } }        // retro pictures: e.g. "Commodore 64"
 
+    // marks of the picture shown (read once per picture; MarksChanged after marking)
+    string markPath;
+    Mark curMark;
+    Mark CurMark
+    {
+        get
+        {
+            if (cur == null) return null;
+            if (!string.Equals(markPath, cur.FullPath, StringComparison.Ordinal)) { markPath = cur.FullPath; curMark = Marks.ForFile(markPath); }
+            return curMark;
+        }
+    }
+    public void MarksChanged() { markPath = null; Invalidate(); }
+
+    // the current file was changed on disk (a lossless turn): read it again and show it as it is now
+    public bool ExtraTurns { get { return cur != null && ((rot - cur.Rot) & 3) != 0; } }
+    public void Reload()
+    {
+        if (cur == null || idx < 0 || idx >= files.Count) return;
+        string p = cur.FullPath;
+        StopAnim();
+        Pic c = cur, old;
+        if (cache.TryGetValue(p, out old)) { cache.Remove(p); if (old != c) old.Dispose(); }
+        cur = null;
+        if (c != null) c.Dispose();
+        DropSharp(); DropFx(); DropComposite(); DropGlow();
+        markPath = null;
+        stripStamps.Remove(p);
+        GoTo(idx);
+    }
+    public void Next() { Step(1); }                       // auto-advance after marking
+
     // The current file was deleted: drop it from the list and show its neighbour. False if nothing is left.
     public bool RemoveCurrent()
     {
@@ -325,6 +371,8 @@ sealed class Canvas : Control
         int i = current == null ? -1 : list.FindIndex(x => string.Equals(x, current, StringComparison.OrdinalIgnoreCase));
         idx = i;
         if (i >= 0) { Prefetch(); Trim(); }
+        stripStamps.Clear();                               // the folder was read again: dates may have changed
+        if (strip) { if (HasImage) { Refit(); Clamp(); } Invalidate(); }
     }
 
     public bool HandleKey(Keys keyData)
@@ -375,6 +423,15 @@ sealed class Canvas : Control
                 SignalMode = (signalMode + 1) % 3;
                 Flash("Video signal: " + SignalNames[signalMode] + (signalMode > 0 && HasImage && cur.Note == null ? " (retro pictures only)"
                       : signalMode == 1 ? " (colours soften a little)" : signalMode == 2 ? " (dithering blends, as on a TV)" : ""));
+                return true;
+            case Keys.J:
+                if (ctrl) break;
+                Filmstrip = !strip;
+                Flash(strip ? (files.Count > 1 ? "Filmstrip on (click a thumbnail to show it)" : "Filmstrip on (shown when the folder has more than one picture)") : "Filmstrip off");
+                return true;
+            case Keys.Z:
+                if (ctrl) break;
+                if (!loupe && HasImage) { loupe = true; Invalidate(); }      // shown while Z is held down
                 return true;
             case Keys.U:
                 if (ctrl) break;
@@ -582,6 +639,7 @@ sealed class Canvas : Control
             p.W = img.Width; p.H = img.Height;
             p.Rot = Util.ReadRotation(img);
             p.Exif = ExifInfo.Read(img);                      // read now: the original is dropped after decoding
+            if (FileRating.MayHold(path)) p.FileStars = FileRating.Read(path, img);
 
             bool anim = false;
             try { anim = ImageAnimator.CanAnimate(img); } catch (Exception) { }
@@ -623,7 +681,7 @@ sealed class Canvas : Control
     {
         if (!HasImage) return;
         if (fitMode == 0) { Clamp(); return; }
-        double cw = ClientSize.Width, ch = ClientSize.Height;
+        double cw = ClientSize.Width, ch = ViewH;
         if (cw < 1 || ch < 1) return;
         double z = Math.Min(cw / RW, ch / RH);
         if (fitMode == 1 && z > 1) z = 1;
@@ -635,7 +693,7 @@ sealed class Canvas : Control
     {
         if (!HasImage) return;
         double mx = Math.Max(0, (RW * zoom - ClientSize.Width) / 2);
-        double my = Math.Max(0, (RH * zoom - ClientSize.Height) / 2);
+        double my = Math.Max(0, (RH * zoom - ViewH) / 2);
         px = Math.Max(-mx, Math.Min(mx, px));
         py = Math.Max(-my, Math.Min(my, py));
     }
@@ -660,7 +718,7 @@ sealed class Canvas : Control
     {
         if (!HasImage) return;
         nz = Math.Max(0.01, Math.Min(64, nz));
-        double cx = ClientSize.Width / 2.0, cy = ClientSize.Height / 2.0, k = nz / zoom;
+        double cx = ClientSize.Width / 2.0, cy = ViewH / 2.0, k = nz / zoom;
         px = (sx - cx) - ((sx - cx) - px) * k;       // keeps the point under the cursor fixed
         py = (sy - cy) - ((sy - cy) - py) * k;
         zoom = nz; fitMode = 0;
@@ -668,7 +726,7 @@ sealed class Canvas : Control
         RaiseView();
     }
 
-    void ZoomCenter(double nz) { ZoomTo(nz, ClientSize.Width / 2.0, ClientSize.Height / 2.0); }
+    void ZoomCenter(double nz) { ZoomTo(nz, ClientSize.Width / 2.0, ViewH / 2.0); }
 
     void Rotate(int d)
     {
@@ -685,6 +743,7 @@ sealed class Canvas : Control
         Graphics g = e.Graphics;
         g.Clear(Bg);
 
+        if (StripShown) g.SetClip(new Rectangle(0, 0, ClientSize.Width, ViewH));
         if (HasImage)
         {
             bool sharp = pixMode == 3 || (pixMode == 0 && cur.Note != null);          // retro pictures are pixel art
@@ -714,6 +773,7 @@ sealed class Canvas : Control
             bool hov = mouseIn && !dragging && PixelAt(mousePt, out hx, out hy);
             if (zoom >= 8 && (showGrid || hov)) DrawPixelTools(g, hov, hx, hy);
             g.ResetTransform();
+            if (loupe && mouseIn && !dragging) DrawLoupe(g, hov, hx, hy);
             if (showInfo) DrawInfo(g, hov, hx, hy);
         }
 
@@ -723,8 +783,92 @@ sealed class Canvas : Control
             using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
                 g.DrawString(notice, big, Brushes.Gray, new RectangleF(20, 0, ClientSize.Width - 40, ClientSize.Height), sf);
         }
+        if (StripShown) { g.ResetClip(); DrawStrip(g); }
         if (showExif && HasImage) DrawExif(g);
         if (flash != null) DrawFlash(g);
+    }
+
+    int StripCell { get { return Util.S(76); } }
+
+    // first file index shown in the strip, so the current picture sits in the middle
+    int StripFirst(out int count)
+    {
+        int cell = StripCell;
+        count = Math.Max(1, ClientSize.Width / cell);
+        int first = (idx < 0 ? 0 : idx) - count / 2;
+        return Math.Max(0, Math.Min(first, Math.Max(0, files.Count - count)));
+    }
+
+    long StripStamp(string path)
+    {
+        long st;
+        if (stripStamps.TryGetValue(path, out st)) return st;
+        try { var fi = new FileInfo(path); st = fi.Exists ? fi.LastWriteTimeUtc.Ticks ^ fi.Length : 0; } catch (Exception) { st = 0; }
+        stripStamps[path] = st;
+        return st;
+    }
+
+    void DrawStrip(Graphics g)
+    {
+        int top = ClientSize.Height - StripH, cell = StripCell, thumb = Util.S(64), count;
+        using (var bb = new SolidBrush(Color.FromArgb(32, 32, 32))) g.FillRectangle(bb, 0, top, ClientSize.Width, StripH);
+        using (var line = new Pen(Color.FromArgb(52, 52, 52))) g.DrawLine(line, 0, top, ClientSize.Width, top);
+        int first = StripFirst(out count);
+        int x0 = Math.Max(0, (ClientSize.Width - Math.Min(count, files.Count) * cell) / 2);
+        var jobs = new List<ThumbJob>();
+        InterpolationMode oldI = g.InterpolationMode;
+        g.InterpolationMode = InterpolationMode.Bilinear;
+        for (int k = 0; k < count && first + k < files.Count; k++)
+        {
+            int i = first + k;
+            string p = files[i];
+            var box = new Rectangle(x0 + k * cell + (cell - thumb) / 2, top + (StripH - thumb) / 2, thumb, thumb);
+            long st = StripStamp(p);
+            int bs;
+            Bitmap b = stripCache.Get(p, st, out bs);
+            if (b != null)
+            {
+                double f = Math.Min(1.0, Math.Min((double)thumb / b.Width, (double)thumb / b.Height));
+                int dw = Math.Max(1, (int)(b.Width * f)), dh = Math.Max(1, (int)(b.Height * f));
+                g.DrawImage(b, box.X + (thumb - dw) / 2, box.Y + (thumb - dh) / 2, dw, dh);
+            }
+            else
+            {
+                using (var ph = new SolidBrush(Color.FromArgb(44, 44, 44))) g.FillRectangle(ph, box.X + thumb / 6, box.Y + thumb / 6, thumb * 2 / 3, thumb * 2 / 3);
+                if (st != 0) jobs.Add(new ThumbJob { Path = p, Size = thumb, Stamp = st });
+            }
+            if (i == idx)
+                using (var sel = new Pen(Color.FromArgb(60, 130, 230), Math.Max(2f, Util.K * 2f))) g.DrawRectangle(sel, box.X - 3, box.Y - 3, thumb + 5, thumb + 5);
+        }
+        g.InterpolationMode = oldI;
+        if (jobs.Count > 0)
+        {
+            if (stripSvc == null) stripSvc = new ThumbService(1, StripThumb);
+            stripHost = FindForm();
+            stripSvc.Replace(jobs);
+        }
+    }
+
+    void StripThumb(ThumbJob j, ThumbResult r)        // worker thread
+    {
+        Control h = stripHost;
+        if (!Util.Post(h, delegate
+        {
+            if (r.Bmp == null) return;
+            stripCache.Put(j.Path, j.Stamp, j.Size, r);
+            if (StripShown) Invalidate(new Rectangle(0, ClientSize.Height - StripH, ClientSize.Width, StripH));
+        }) && r.Bmp != null) r.Bmp.Dispose();
+    }
+
+    // the file index of the strip thumbnail at a window point, or -1
+    int StripHit(Point p)
+    {
+        if (!StripShown || p.Y < ClientSize.Height - StripH) return -1;
+        int count, first = StripFirst(out count), cell = StripCell;
+        int x0 = Math.Max(0, (ClientSize.Width - Math.Min(count, files.Count) * cell) / 2);
+        if (p.X < x0) return -1;
+        int i = first + (p.X - x0) / cell;
+        return i < files.Count && (p.X - x0) / cell < count ? i : -1;
     }
 
     // drawn while the picture's transform is active, so everything is in picture-pixel coordinates
@@ -997,7 +1141,7 @@ sealed class Canvas : Control
     // the picture's transform: pan, rotate, zoom, True TV aspect, mirror (picture pixels -> window pixels)
     void PicTransform(Graphics g)
     {
-        g.TranslateTransform((float)(ClientSize.Width / 2.0 + px), (float)(ClientSize.Height / 2.0 + py));
+        g.TranslateTransform((float)(ClientSize.Width / 2.0 + px), (float)(ViewH / 2.0 + py));
         g.RotateTransform(rot * 90f);
         g.ScaleTransform((float)zoom, (float)zoom);
         double ax = Ax;
@@ -1038,9 +1182,9 @@ sealed class Canvas : Control
     Rectangle PicScreenRect()
     {
         double w = RW * zoom, h = RH * zoom;
-        double x = ClientSize.Width / 2.0 + px - w / 2, y = ClientSize.Height / 2.0 + py - h / 2;
+        double x = ClientSize.Width / 2.0 + px - w / 2, y = ViewH / 2.0 + py - h / 2;
         int x0 = (int)Math.Floor(x), y0 = (int)Math.Floor(y), x1 = (int)Math.Ceiling(x + w), y1 = (int)Math.Ceiling(y + h);
-        return Rectangle.Intersect(Rectangle.FromLTRB(x0, y0, x1, y1), ClientRectangle);
+        return Rectangle.Intersect(Rectangle.FromLTRB(x0, y0, x1, y1), new Rectangle(0, 0, ClientSize.Width, ViewH));
     }
 
     // ---- CRT effects (K scanlines, M phosphor mask): display only, retro pictures, upright or upside down.
@@ -1065,7 +1209,7 @@ sealed class Canvas : Control
     Bitmap EffectFrame(Rectangle r, bool sharp, bool exact, bool scan, bool mask, bool glow, bool curve)
     {
         var inv = System.Globalization.CultureInfo.InvariantCulture;
-        string key = zoom.ToString("R", inv) + "|" + px.ToString("R", inv) + "|" + py.ToString("R", inv) + "|" + ClientSize.Width + "x" + ClientSize.Height
+        string key = zoom.ToString("R", inv) + "|" + px.ToString("R", inv) + "|" + py.ToString("R", inv) + "|" + ClientSize.Width + "x" + ViewH
                    + "|" + r.X + "," + r.Y + "," + r.Width + "," + r.Height + "|" + rot + (flipX ? "h" : "") + (flipY ? "v" : "") + "|" + Ax.ToString("R", inv)
                    + "|" + (scan ? scanMode : 0) + "|" + (mask ? maskMode : 0) + "|" + (sharp ? "s" : "") + (exact ? "e" : "") + (fast ? "f" : "")
                    + (checker ? "c" : "") + "|" + (SignalApplies ? signalMode : 0) + "|" + (glow ? glowMode : 0) + "|" + (curve ? curveMode : 0) + "|" + (AnimActive ? frame : 0);
@@ -1178,7 +1322,7 @@ sealed class Canvas : Control
             for (int y = 0; y < h; y++) Marshal.Copy(bd.Scan0 + y * bd.Stride, fxPix, y * w, w);
             if (scan) BuildScanTable();
             int[] tab = scanTab;
-            double lh = LineHeight, cy = ClientSize.Height / 2.0 + py;
+            double lh = LineHeight, cy = ViewH / 2.0 + py;
             bool upside = rot == 2;
             int unit = Util.K >= 1.75f ? 2 : 1;                                 // phosphors twice as wide on very dense screens
             const int Lit = 333, Dim = 166;                                     // mask: 1.3 and 0.65 (x256)
@@ -1234,9 +1378,27 @@ sealed class Canvas : Control
         finally { fxBmp.UnlockBits(bd); }
     }
 
+    // "    \u2605\u2605\u2605  Red  \u2714 tagged" for the info bar ("" without marks)
+    string MarkText()
+    {
+        Mark m = CurMark;
+        if ((m == null || m.Stars == 0) && cur != null && cur.FileStars > 0)          // only the file's own rating
+            return "    " + Marks.StarText(cur.FileStars) + " (in the file)" + (m != null && !m.Empty ? "  " + MarkRest(m) : "");
+        if (m == null || m.Empty) return "";
+        return "    " + (m.Stars > 0 ? Marks.StarText(m.Stars) : "") + (m.Label > 0 ? (m.Stars > 0 ? "  " : "") + Marks.LabelNames[m.Label] : "")
+             + (m.Tag ? (m.Stars > 0 || m.Label > 0 ? "  " : "") + "\u2714 tagged" : "");
+    }
+
+    // label and tag only (when the stars come from the file)
+    static string MarkRest(Mark m)
+    {
+        return (m.Label > 0 ? Marks.LabelNames[m.Label] : "") + (m.Tag ? (m.Label > 0 ? "  " : "") + "\u2714 tagged" : "");
+    }
+
     void DrawInfo(Graphics g, bool hov, int hx, int hy)
     {
         string s = Path.GetFileName(cur.FullPath) + "    " + cur.W + " x " + cur.H + "    " + Util.FmtSize(cur.Bytes)
+                 + MarkText()
                  + (cur.Note != null ? "    " + cur.Note : "") + "    " + (int)Math.Round(zoom * 100) + "%" + (fitLock ? " (Fit)" : "")
                  + (flipX ? "    Flipped H" : "") + (flipY ? "    Flipped V" : "") + "    " + (idx + 1) + " / " + files.Count
                  + (slideshow ? "    Slideshow " + SlideSecs[slideIdx] + " s" : "")
@@ -1253,7 +1415,7 @@ sealed class Canvas : Control
                     : MaskWanted ? "    Mask (off while turned sideways)" : "");
         float k = g.DpiY / 96f;
         int h = (int)(font.GetHeight(g) + 10 * k);
-        var bar = new Rectangle(0, ClientSize.Height - h, ClientSize.Width, h);
+        var bar = new Rectangle(0, ViewH - h, ClientSize.Width, h);
         g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
         using (var b = new SolidBrush(Color.FromArgb(170, 0, 0, 0))) g.FillRectangle(b, bar);
 
@@ -1343,13 +1505,19 @@ sealed class Canvas : Control
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
+        if (StripShown && e.Y >= ClientSize.Height - StripH)       // the filmstrip: show the clicked picture
+        {
+            int hit = StripHit(e.Location);
+            if (e.Button == MouseButtons.Left && hit >= 0 && hit != idx) GoTo(hit);
+            return;
+        }
         if (e.Button == MouseButtons.Left && HasImage) { dragging = true; last = e.Location; Cursor = Cursors.SizeAll; }
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
-        if (!dragging) { UpdateHover(e.Location); return; }
+        if (!dragging) { UpdateHover(e.Location); if (loupe) Invalidate(); return; }
         px += e.X - last.X; py += e.Y - last.Y;
         last = e.Location;
         Clamp(); Interact();
@@ -1362,8 +1530,19 @@ sealed class Canvas : Control
     bool PixelAt(Point s, out int ix, out int iy)
     {
         ix = iy = 0;
+        double a, b;
+        if (!PicPoint(s, out a, out b)) return false;
+        ix = (int)Math.Floor(a);
+        iy = (int)Math.Floor(b);
+        return ix >= 0 && iy >= 0 && ix < cur.W && iy < cur.H;
+    }
+
+    // the exact point of the picture (in its own pixels, 0..W, 0..H) under a window point
+    bool PicPoint(Point s, out double pa, out double pb)
+    {
+        pa = pb = 0;
         if (!HasImage || zoom <= 0) return false;
-        double u = (s.X - (ClientSize.Width / 2.0 + px)) / zoom, v = (s.Y - (ClientSize.Height / 2.0 + py)) / zoom, a, b;
+        double u = (s.X - (ClientSize.Width / 2.0 + px)) / zoom, v = (s.Y - (ViewH / 2.0 + py)) / zoom, a, b;
         switch (rot & 3)
         {
             case 0: a = u; b = v; break;
@@ -1374,13 +1553,78 @@ sealed class Canvas : Control
         if (flipX) a = -a;
         if (flipY) b = -b;
         a /= Ax;                                          // undo the True TV aspect stretch
-        ix = (int)Math.Floor(a + cur.W / 2.0);
-        iy = (int)Math.Floor(b + cur.H / 2.0);
-        return ix >= 0 && iy >= 0 && ix < cur.W && iy < cur.H;
+        pa = a + cur.W / 2.0;
+        pb = b + cur.H / 2.0;
+        return true;
+    }
+
+    // ---- loupe (hold Z): a round magnifier around the pointer, 4 times the current size (at least 400%,
+    // at most 6400%), showing the picture's own pixels sharp (no screen effects) with the pixel under the pointer
+    // outlined. Gone as soon as Z is let go.
+    void DrawLoupe(Graphics g, bool hov, int hx, int hy)
+    {
+        double a, b;
+        if (!PicPoint(mousePt, out a, out b)) return;
+        int size = Util.S(240);
+        float mag = (float)Math.Min(64, Math.Max(4, zoom * 4));
+        var area = new Rectangle(mousePt.X - size / 2, mousePt.Y - size / 2, size, size);
+        double ax = Ax;
+        double reach = size / (2.0 * mag * Math.Min(1.0, ax)) + 2;                 // picture pixels the loupe can show
+        int x0 = Math.Max(0, (int)Math.Floor(a - reach)), y0 = Math.Max(0, (int)Math.Floor(b - reach));
+        int x1 = Math.Min(cur.W, (int)Math.Ceiling(a + reach)), y1 = Math.Min(cur.H, (int)Math.Ceiling(b + reach));
+        GraphicsState st = g.Save();
+        using (var path = new GraphicsPath())
+        {
+            path.AddEllipse(area);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var bg = new SolidBrush(Bg)) g.FillPath(bg, path);
+            g.SetClip(path);
+            g.SmoothingMode = SmoothingMode.None;
+            g.InterpolationMode = InterpolationMode.NearestNeighbor;
+            g.PixelOffsetMode = PixelOffsetMode.Half;
+            g.TranslateTransform(mousePt.X, mousePt.Y);
+            g.RotateTransform(rot * 90f);
+            g.ScaleTransform(mag, mag);
+            if (ax != 1.0) g.ScaleTransform((float)ax, 1f);
+            if (flipX || flipY) g.ScaleTransform(flipX ? -1f : 1f, flipY ? -1f : 1f);
+            g.TranslateTransform((float)-a, (float)-b);
+            if (x1 > x0 && y1 > y0)
+                g.DrawImage(cur.Img, new Rectangle(x0, y0, x1 - x0, y1 - y0), x0, y0, x1 - x0, y1 - y0, GraphicsUnit.Pixel, ia);
+            if (hov)
+                using (var pen = new Pen(Color.FromArgb(230, 255, 220, 0), 2f / mag)) g.DrawRectangle(pen, hx, hy, 1, 1);
+        }
+        g.Restore(st);
+        SmoothingMode old = g.SmoothingMode;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using (var ring = new Pen(Color.FromArgb(60, 130, 230), Math.Max(2f, Util.K * 2f))) g.DrawEllipse(ring, area);
+        g.SmoothingMode = old;
+        string label = (int)Math.Round(mag * 100) + "%";                          // the loupe's own size: picture pixels x mag
+        g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+        SizeF ls = g.MeasureString(label, font);
+        var lr = new RectangleF(area.X + (area.Width - ls.Width) / 2 - 4, area.Bottom - ls.Height - Util.S(10), ls.Width + 8, ls.Height);
+        using (var lb = new SolidBrush(Color.FromArgb(170, 0, 0, 0))) g.FillRectangle(lb, lr);
+        g.DrawString(label, font, Brushes.Gainsboro, lr.X + 4, lr.Y);
+    }
+
+    protected override void OnKeyUp(KeyEventArgs e)
+    {
+        base.OnKeyUp(e);
+        if (e.KeyCode == Keys.Z && loupe) { loupe = false; Invalidate(); }
+    }
+
+    protected override void OnLostFocus(EventArgs e)
+    {
+        base.OnLostFocus(e);
+        if (loupe) { loupe = false; Invalidate(); }          // the key-up would go elsewhere
     }
 
     void UpdateHover(Point p)
     {
+        if (StripShown && p.Y >= ClientSize.Height - StripH)       // over the filmstrip: no pixel readout or loupe
+        {
+            if (mouseIn) { mouseIn = false; lhx = lhy = -2; InvalidateReadout(); if (loupe) Invalidate(); }
+            return;
+        }
         mouseIn = true; mousePt = p;
         int ix, iy;
         if (!PixelAt(p, out ix, out iy)) { ix = -1; iy = -1; }
@@ -1394,7 +1638,7 @@ sealed class Canvas : Control
     {
         if (zoom >= 8) { Invalidate(); return; }
         int h = font.Height + Util.S(14);
-        Invalidate(new Rectangle(0, Math.Max(0, ClientSize.Height - h), ClientSize.Width, h));
+        Invalidate(new Rectangle(0, Math.Max(0, ViewH - h), ClientSize.Width, h));
     }
 
     // + / - : whole-number steps above 100%, so enlarged pixels stay square; 1.25x steps below
@@ -1458,7 +1702,7 @@ sealed class Canvas : Control
             checkerCell = cell;
         }
         double w = RW * zoom, h = RH * zoom;
-        double x = ClientSize.Width / 2.0 + px - w / 2, y = ClientSize.Height / 2.0 + py - h / 2;
+        double x = ClientSize.Width / 2.0 + px - w / 2, y = ViewH / 2.0 + py - h / 2;
         g.FillRectangle(checkerBrush, (float)x, (float)y, (float)w, (float)h);
     }
 
@@ -1486,6 +1730,7 @@ sealed class Canvas : Control
         if (slideshow) { StopSlideshow(); Flash("Slideshow stopped"); return; }
         if (files.Count < 2) { Flash("A slideshow needs at least two pictures"); return; }
         slideshow = true;
+        if (strip && HasImage) { Refit(); Clamp(); }        // the filmstrip hides during a slideshow
         slideTimer.Interval = SlideSecs[slideIdx] * 1000;
         slideTimer.Start();
         Flash("Slideshow: " + SlideSecs[slideIdx] + " s per picture   (Up / Down = interval, S or Esc = stop)");
@@ -1496,6 +1741,7 @@ sealed class Canvas : Control
         if (!slideshow) return;
         slideshow = false;
         slideTimer.Stop();
+        if (strip && HasImage) { Refit(); Clamp(); }
         Invalidate();
     }
 
@@ -1523,7 +1769,7 @@ sealed class Canvas : Control
     protected override void OnMouseDoubleClick(MouseEventArgs e)
     {
         base.OnMouseDoubleClick(e);
-        if (!HasImage) return;
+        if (!HasImage || (StripShown && e.Y >= ClientSize.Height - StripH)) return;
         if (Math.Abs(zoom - 1) < 1e-6) SetFit(2); else ZoomTo(1, e.X, e.Y);
     }
 }

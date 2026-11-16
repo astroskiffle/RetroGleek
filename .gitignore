@@ -8,6 +8,7 @@ obj/
 
 # personal settings written by RetroGleek when it closes
 settings.ini
+marks.tsv
 
 # python
 __pycache__/

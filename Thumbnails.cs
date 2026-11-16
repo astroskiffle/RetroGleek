@@ -37,6 +37,7 @@ sealed class ThumbResult
     public int W, H;             // picture size as displayed (after EXIF rotation)
     public string Note;          // retro platform name, if any
     public string Error;         // set when Bmp == null
+    public int FileStars;        // star rating stored in the file by Windows / Lightroom ... (0 = none)
 }
 
 // LRU cache of thumbnails, bounded by memory. UI thread only.
@@ -164,7 +165,8 @@ sealed class ThumbService
         {
             int rot = Util.ReadRotation(img);
             bool swap = (rot & 1) == 1;
-            return new ThumbResult { Bmp = Scale(img, rot, size), W = swap ? img.Height : img.Width, H = swap ? img.Width : img.Height };
+            return new ThumbResult { Bmp = Scale(img, rot, size), W = swap ? img.Height : img.Width, H = swap ? img.Width : img.Height,
+                                     FileStars = FileRating.MayHold(path) ? FileRating.Read(path, img) : 0 };
         }
     }
 

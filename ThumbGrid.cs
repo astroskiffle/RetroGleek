@@ -46,7 +46,7 @@ sealed class ThumbGrid : Control
     public int FocusIndex { get { return fidx; } }
     public int TotalCount { get { return all.Count; } }
     public string Filter { get { return filter; } }
-    public bool FilterActive { get { return filter.Length > 0; } }
+    public bool FilterActive { get { return filter.Length > 0 || showMode != 0; } }
 
     public string SortLabel
     {
@@ -62,6 +62,8 @@ sealed class ThumbGrid : Control
                 case 6: return "frames, " + (SortDesc ? "most first" : "fewest first");
                 case 7: return "colours, " + (SortDesc ? "most first" : "fewest first");
                 case 8: return "status" + (SortDesc ? ", reversed" : "");
+                case 9: return "rating, " + (SortDesc ? "most stars first" : "fewest stars first");
+                case 10: return "colour label" + (SortDesc ? ", reversed" : "");
                 default: return "name" + (SortDesc ? ", reversed" : "");
             }
         }
@@ -223,7 +225,7 @@ sealed class ThumbGrid : Control
             analysed[r.Key.Key] = new Analysed { Stamp = r.Key.Value, E = r.Value };
             AuditEntry e = r.Value;
             if (e != null && e.Status == "OK")                  // also tells platform and dimensions
-                known[r.Key.Key] = new Known { Stamp = r.Key.Value, W = e.W, H = e.H, Note = e.Kind == "Standard" ? null : e.Platform };
+                known[r.Key.Key] = new Known { Stamp = r.Key.Value, W = e.W, H = e.H, Note = e.Kind == "Standard" ? null : e.Platform, FileStars = e.FileStars };
         }
         analyseDone = done;
         RecomputeDuplicates();
@@ -306,7 +308,8 @@ sealed class ThumbGrid : Control
     bool detailsMode;
     public event Action ColumnsChanged;                    // the header above the grid must be redrawn
     // what the thumbnail workers found out about each picture (kept even when its thumbnail leaves the cache)
-    sealed class Known { public long Stamp; public int W, H; public string Note; }
+    sealed class Known { public long Stamp; public int W, H; public string Note; public int FileStars; }
+    bool refilterWhenKnown;                                // Show filter by rating: list again as files' ratings are read
     readonly Dictionary<string, Known> known = new Dictionary<string, Known>(StringComparer.OrdinalIgnoreCase);
     bool resortWhenKnown;                                  // sorted by platform / dimensions: sort again once all are known
     readonly WinTimer resortTimer = new WinTimer { Interval = 800 };
@@ -353,10 +356,10 @@ sealed class ThumbGrid : Control
         int lm = pad / 2, width = Math.Max(1, ClientSize.Width - vs.Width - lm);
         var c = new List<Column>();
         int thumbW = tile + Util.S(10);
-        string[] titles = { "Name", "Type", "Platform", "Dimensions", "Frames", "Colours", "Size", "Modified", "Status" };
-        int[] keys = { 0, 3, 4, 5, 6, 7, 2, 1, 8 };
-        int[] fixedW = { 0, Util.S(60), Util.S(146), Util.S(100), Util.S(62), Util.S(76), Util.S(80), Util.S(124), Util.S(200) };
-        bool[] right = { false, false, false, true, true, true, true, true, false };
+        string[] titles = { "Name", "Rating", "Label", "Type", "Platform", "Dimensions", "Frames", "Colours", "Size", "Modified", "Status" };
+        int[] keys = { 0, 9, 10, 3, 4, 5, 6, 7, 2, 1, 8 };
+        int[] fixedW = { 0, Util.S(70), Util.S(70), Util.S(60), Util.S(146), Util.S(100), Util.S(62), Util.S(76), Util.S(80), Util.S(124), Util.S(200) };
+        bool[] right = { false, false, false, false, false, true, true, true, true, true, false };
         int sum = thumbW;
         for (int i = 1; i < fixedW.Length; i++) sum += fixedW[i];
         int nameW = Math.Max(Util.S(160), width - sum);
@@ -410,15 +413,29 @@ sealed class ThumbGrid : Control
         resortTimer.Tick += delegate
         {
             resortTimer.Stop();
-            if (!resortWhenKnown || SortKey < 4 || SortKey > 5) return;
+            bool sortPending = resortWhenKnown && (SortKey == 4 || SortKey == 5 || SortKey == 9);
+            bool showPending = refilterWhenKnown && showMode >= 3 && showMode <= 8;
+            if (!sortPending && !showPending) return;
+            bool needDims = sortPending && SortKey != 9, needRating = (sortPending && SortKey == 9) || showPending, done = true;
             foreach (Item it in all)
             {
+                if (it.Offline || IsFailed(it)) continue;
                 int w, h; string n;
-                if (!it.Offline && !IsFailed(it) && !KnownInfo(it, out w, out h, out n)) return;   // still reading
+                if (needDims && !KnownInfo(it, out w, out h, out n)) { done = false; break; }   // still reading
+                if (needRating && !RatingKnown(it)) { done = false; break; }
             }
-            resortWhenKnown = false;                          // everything is known: one final, complete sort
-            SetSort(SortKey, SortDesc);
-            resortWhenKnown = false;
+            if (showPending)                                  // rated pictures appear as their ratings are read
+            {
+                Item fi = FocusItem(), an = AnchorItem();
+                Rebuild(fi, an);
+                if (done) refilterWhenKnown = false;
+            }
+            if (sortPending && done)
+            {
+                resortWhenKnown = false;                      // everything is known: one final, complete sort
+                SetSort(SortKey, SortDesc);
+                resortWhenKnown = false;
+            }
         };
         Relayout();
     }
@@ -430,6 +447,17 @@ sealed class ThumbGrid : Control
     Comparison<Item> SortComparer(int key, bool desc)
     {
         if (key < 4) return MakeComparer(key, desc);
+        if (key == 9 || key == 10)
+            return delegate (Item a, Item b)
+            {
+                Mark ma = MarkOf(a), mb = MarkOf(b);
+                int va = key == 9 ? StarsOf(a) : ma == null ? 0 : ma.Label, vb = key == 9 ? StarsOf(b) : mb == null ? 0 : mb.Label;
+                int c;
+                if ((va == 0) != (vb == 0)) c = va == 0 ? 1 : -1;                                 // unmarked: at the end, either way
+                else { c = va.CompareTo(vb); if (desc) c = -c; }
+                if (c == 0) c = Util.NatCmp(a.Name, b.Name);
+                return c;
+            };
         if (key >= 6)
             return delegate (Item a, Item b)
             {
@@ -527,9 +555,113 @@ sealed class ThumbGrid : Control
 
     List<Item> Filtered()
     {
-        if (matcher == null) return all;
+        if (matcher == null && showMode == 0) return all;
         Predicate<string> m = matcher;
-        return all.FindAll(delegate (Item i) { return m(i.Name); });
+        int sm = showMode;
+        return all.FindAll(delegate (Item i) { return (m == null || m(i.Name)) && ShowMatches(i, sm); });
+    }
+
+    // ---------------------------------------------------------------- marks (ratings, colour labels, tag)
+
+    // The Show pull-down: 0 all, 1 tagged, 2 not tagged, 3..7 = 1..5 stars or more, 8 no rating,
+    // 9..13 = colour label 1..5, 14 no label
+    public static readonly string[] ShowNames =
+    {
+        "All", "Tagged", "Not tagged",
+        "\u2605 or more", "\u2605\u2605 or more", "\u2605\u2605\u2605 or more", "\u2605\u2605\u2605\u2605 or more", "\u2605\u2605\u2605\u2605\u2605",
+        "No rating", "Red", "Yellow", "Green", "Blue", "Purple", "No label"
+    };
+    int showMode;
+
+    public int ShowMode
+    {
+        get { return showMode; }
+        set
+        {
+            int v = Math.Max(0, Math.Min(ShowNames.Length - 1, value));
+            if (v == showMode) return;
+            Item fi = FocusItem(), an = AnchorItem();
+            showMode = v;
+            refilterWhenKnown = v >= 3 && v <= 8;              // by rating: photos' own ratings are read in the background
+            Rebuild(fi, an);
+        }
+    }
+
+    public Mark MarkOf(Item it) { return it == null || it.Offline ? null : Marks.Get(it.Path, it.Size, it.Modified); }
+
+    // the star rating stored in the file itself (Windows, Lightroom ...), as read with its thumbnail; 0 = none / not yet read
+    public int FileStarsOf(Item it)
+    {
+        Known k;
+        return it != null && known.TryGetValue(it.Path, out k) && k.Stamp == it.Stamp ? k.FileStars : 0;
+    }
+
+    // the rating that counts: yours, or else the file's own
+    public int StarsOf(Item it)
+    {
+        Mark m = MarkOf(it);
+        return m != null && m.Stars > 0 ? m.Stars : FileStarsOf(it);
+    }
+
+    // true when the file's own rating is known (or it can't have one)
+    bool RatingKnown(Item it)
+    {
+        if (it.Offline || !FileRating.MayHold(it.Path) || IsFailed(it)) return true;
+        Known k;
+        return known.TryGetValue(it.Path, out k) && k.Stamp == it.Stamp;
+    }
+
+    bool ShowMatches(Item it, int sm)
+    {
+        if (sm == 0) return true;
+        Mark m = MarkOf(it);
+        int stars = StarsOf(it), label = m == null ? 0 : m.Label;
+        bool tag = m != null && m.Tag;
+        if (sm == 1) return tag;
+        if (sm == 2) return !tag;
+        if (sm >= 3 && sm <= 7) return stars >= sm - 2;
+        if (sm == 8) return stars == 0;
+        if (sm >= 9 && sm <= 13) return label == sm - 8;
+        return label == 0;
+    }
+
+    // after marking: redraw, and with a Show filter re-check which pictures belong in the list
+    // (a picture that no longer matches leaves it; the focus stays at the same place in the list)
+    public void MarksChanged()
+    {
+        if (showMode == 0) { Invalidate(); return; }
+        int at = fidx;
+        Item fi = FocusItem(), an = AnchorItem();
+        Rebuild(fi, an);
+        if (fidx < 0 && Items.Count > 0 && at >= 0) SelectOnly(Math.Min(at, Items.Count - 1));
+    }
+
+    public int CountTagged()
+    {
+        int n = 0;
+        foreach (Item it in all) { Mark m = MarkOf(it); if (m != null && m.Tag) n++; }
+        return n;
+    }
+
+    // Edit > Select tagged: exactly the tagged pictures in the current view
+    public void SelectTagged()
+    {
+        int first = -1;
+        for (int i = 0; i < Items.Count; i++)
+        {
+            Mark m = MarkOf(Items[i]);
+            Items[i].Sel = m != null && m.Tag;
+            if (Items[i].Sel && first < 0) first = i;
+        }
+        anc = fidx = first;
+        if (first >= 0) EnsureVisible(first);
+        Changed();
+    }
+
+    // after marking one picture: the next one becomes the only selection (auto-advance)
+    public void SelectNext()
+    {
+        if (fidx >= 0 && fidx + 1 < Items.Count) SelectOnly(fidx + 1);
     }
 
     Item FocusItem() { return fidx >= 0 && fidx < Items.Count ? Items[fidx] : null; }
@@ -539,7 +671,7 @@ sealed class ThumbGrid : Control
     void Rebuild(Item fi, Item an)
     {
         Items = Filtered();
-        if (matcher != null)
+        if (matcher != null || showMode != 0)
         {
             var visible = new HashSet<Item>(Items);                       // a hidden picture is never left selected
             foreach (Item it in all) if (!visible.Contains(it)) it.Sel = false;
@@ -561,7 +693,7 @@ sealed class ThumbGrid : Control
         Item fi = FocusItem(), an = AnchorItem();
         SortKey = key; SortDesc = desc;
         all.Sort(SortComparer(key, desc));
-        resortWhenKnown = key == 4 || key == 5;
+        resortWhenKnown = key == 4 || key == 5 || key == 9;
         if (key >= 6 && key <= 7 && !analyseRunning) { bool any = false; foreach (Item it in all) if (!it.Offline && !HasAnalysis(it)) { any = true; break; } if (any) StartAnalysis(); }
         Rebuild(fi, an);
         var cc = ColumnsChanged; if (cc != null) cc();
@@ -678,7 +810,8 @@ sealed class ThumbGrid : Control
         Scanning = false;
         bool newDir = !Util.SameDir(dir, lastDir);
         Dir = dir; all = list; Error = err;
-        if (SortKey >= 4) { all.Sort(SortComparer(SortKey, SortDesc)); resortWhenKnown = SortKey <= 5; }
+        if (SortKey >= 4) { all.Sort(SortComparer(SortKey, SortDesc)); resortWhenKnown = SortKey <= 5 || SortKey == 9; }
+        refilterWhenKnown = showMode >= 3 && showMode <= 8;
         bool cleared = false;
         if (newDir) StopAnalysis();                                                          // results stay, for when you come back
         if (newDir && filter.Length > 0) { filter = ""; matcher = null; cleared = true; }   // a filter belongs to one folder
@@ -741,6 +874,17 @@ sealed class ThumbGrid : Control
                     if (it.Offline || IsFailed(it) || KnownInfo(it, out w, out h, out nt)) continue;
                     jobs.Add(new ThumbJob { Path = it.Path, Size = tile, Stamp = it.Stamp });
                 }
+            if (SortKey == 9 || (showMode >= 3 && showMode <= 8))      // by rating: read the photos' own ratings too
+            {
+                var queued = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (ThumbJob qj in jobs) queued.Add(qj.Path);
+                foreach (Item it in all)                               // (all, not just the list: a filter may hide them)
+                {
+                    if (RatingKnown(it) || queued.Contains(it.Path)) continue;
+                    if (jobs.Count > 4000) break;
+                    jobs.Add(new ThumbJob { Path = it.Path, Size = tile, Stamp = it.Stamp });
+                }
+            }
         }
         svc.Replace(jobs);
     }
@@ -761,8 +905,8 @@ sealed class ThumbGrid : Control
 
     void Thumbed(ThumbJob j, ThumbResult r)
     {
-        if (r.Bmp != null) known[j.Path] = new Known { Stamp = j.Stamp, W = r.W, H = r.H, Note = r.Note };
-        if (resortWhenKnown) { resortTimer.Stop(); resortTimer.Start(); }
+        if (r.Bmp != null) known[j.Path] = new Known { Stamp = j.Stamp, W = r.W, H = r.H, Note = r.Note, FileStars = r.FileStars };
+        if (resortWhenKnown || refilterWhenKnown) { resortTimer.Stop(); resortTimer.Start(); }
         if (r.Bmp == null) { failed[j.Path] = j.Stamp; failMsg[j.Path] = r.Error ?? "unknown error"; }
         else if (j.Size != tile) r.Bmp.Dispose();
         else cache.Put(j.Path, j.Stamp, j.Size, r);
@@ -1059,6 +1203,7 @@ sealed class ThumbGrid : Control
             if (t.Length > 0)
                 TextRenderer.DrawText(g, t, font, ph, Color.Gray, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
         }
+        DrawMarks(g, it, box);
         var tr = new Rectangle(rc.X + 2, box.Bottom + pad / 2, rc.Width - 4, font.Height + 2);
         TextRenderer.DrawText(g, it.Name, font, tr, dim ? Color.Gray : it.Sel ? Color.White : Color.Gainsboro,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
@@ -1082,6 +1227,38 @@ sealed class ThumbGrid : Control
     }
 
     readonly SolidBrush stripeBrush = new SolidBrush(Color.FromArgb(29, 29, 29));
+
+    // marks on a thumbnail tile, drawn only when the picture has some: a colour strip along the top, a tick for
+    // the tag at the top right, stars at the bottom left
+    void DrawMarks(Graphics g, Item it, Rectangle box)
+    {
+        Mark m = MarkOf(it);
+        int fileStars = m != null && m.Stars > 0 ? 0 : FileStarsOf(it);
+        if ((m == null || m.Empty) && fileStars == 0) return;
+        if (m == null) m = new Mark();
+        if (m.Label > 0)
+            using (var lb = new SolidBrush(Marks.LabelColours[m.Label])) g.FillRectangle(lb, box.X, box.Y, box.Width, Math.Max(3, Util.S(4)));
+        if (m.Tag)
+        {
+            int s = Math.Max(12, Util.S(16));
+            var r = new Rectangle(box.Right - s - Util.S(3), box.Y + Util.S(7), s, s);
+            using (var bb = new SolidBrush(Color.FromArgb(60, 130, 230))) g.FillRectangle(bb, r);
+            SmoothingMode old = g.SmoothingMode;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var pen = new Pen(Color.White, Math.Max(1.5f, Util.K * 2f)))
+                g.DrawLines(pen, new[] { new PointF(r.X + s * 0.22f, r.Y + s * 0.52f), new PointF(r.X + s * 0.42f, r.Y + s * 0.72f), new PointF(r.X + s * 0.78f, r.Y + s * 0.28f) });
+            g.SmoothingMode = old;
+        }
+        if (m.Stars > 0 || fileStars > 0)
+        {
+            string st = Marks.StarText(m.Stars > 0 ? m.Stars : fileStars);
+            Size sz = TextRenderer.MeasureText(g, st, font, Size.Empty, TextFormatFlags.NoPadding);
+            var r = new Rectangle(box.X + Util.S(3), box.Bottom - sz.Height - Util.S(4), sz.Width + Util.S(6), sz.Height + Util.S(2));
+            using (var bb = new SolidBrush(Color.FromArgb(170, 0, 0, 0))) g.FillRectangle(bb, r);
+            Color sc = m.Stars > 0 ? Color.FromArgb(255, 205, 70) : Color.FromArgb(200, 200, 200);   // silver: the file's own rating
+            TextRenderer.DrawText(g, st, font, r, sc, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        }
+    }
 
     void DrawRow(Graphics g, int i, Rectangle rc)
     {
@@ -1117,9 +1294,12 @@ sealed class ThumbGrid : Control
         string status = StatusText(it, i, out statusColour);
         AuditEntry an = AnalysisOf(it);
         bool deep = an != null && an.W > 0;
+        Mark mk = MarkOf(it);
         string[] text =
         {
-            it.Name,
+            it.Name + (mk != null && mk.Tag ? "  \u2714" : ""),
+            Marks.StarText(StarsOf(it)),
+            mk != null && mk.Label > 0 ? Marks.LabelNames[mk.Label] : "",
             (it.Ext ?? "").TrimStart('.').ToUpperInvariant(),
             have ? (note ?? "PC (standard image)") : "",
             have ? w + " x " + h : "",
@@ -1139,7 +1319,10 @@ sealed class ThumbGrid : Control
             var cell = new Rectangle(col.X + Util.S(6), rc.Y, Math.Max(0, col.W - Util.S(12)), rc.Height);
             TextFormatFlags fl = TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine
                                | (col.Right ? TextFormatFlags.Right : TextFormatFlags.Left);
-            Color fc = c == statusCol ? statusColour : c == 0 ? fore : dim ? Color.Gray : (it.Sel ? Color.White : Color.FromArgb(175, 175, 175));
+            Color fc = c == statusCol ? statusColour : c == 0 ? fore : dim ? Color.Gray
+                     : c == 1 ? (mk != null && mk.Stars > 0 ? Color.FromArgb(255, 205, 70) : Color.FromArgb(200, 200, 200))   // gold: yours, silver: the file's
+                     : c == 2 && mk != null && mk.Label > 0 ? Marks.LabelColours[mk.Label]       // the label in its colour
+                     : (it.Sel ? Color.White : Color.FromArgb(175, 175, 175));
             TextRenderer.DrawText(g, text[c], c == 0 ? font : small, cell, fc, fl);
         }
     }
@@ -1405,7 +1588,128 @@ sealed class DetailHeader : Control
         int key = grid.Columns()[h].Key;
         if (key < 0) return;
         if (key == grid.SortKey) grid.SetSort(key, !grid.SortDesc);
-        else grid.SetSort(key, key == 1 || key == 2 || key == 5 || key == 6 || key == 7);   // date, size, dimensions, frames, colours: largest first
+        else grid.SetSort(key, key == 1 || key == 2 || key == 5 || key == 6 || key == 7 || key == 9);   // date, size, dimensions, frames, colours, rating: largest first
         grid.Focus();
+    }
+}
+
+// The preview pane (Alt+P): to the right of the thumbnails, a large preview of the focused picture and a few
+// facts about it. Off by default. The preview is made on its own background thread, at the pane's size.
+sealed class PreviewPane : Control
+{
+    readonly Font font = new Font("Segoe UI", 9f), bold = new Font("Segoe UI", 10f, FontStyle.Bold);
+    ThumbService svc;
+    Control host;
+    Item item;                             // what is shown (null = nothing)
+    Mark mark;
+    string where, selNote;
+    Bitmap bmp;
+    int bmpW, bmpH, reqSize;
+    string note, error;
+    int gen, fileStars;
+
+    public PreviewPane()
+    {
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        BackColor = Color.FromArgb(30, 30, 30);
+    }
+
+    int WantSize { get { return Math.Max(64, Math.Min(1600, Math.Max(ClientSize.Width, ClientSize.Height - Util.S(150)))); } }
+
+    // it = the focused picture; m = its marks; folder = shown when the list spans subfolders; others = how many more are selected
+    public void ShowItem(Item it, Mark m, string folder, int others)
+    {
+        mark = m; where = folder;
+        selNote = others > 0 ? "+ " + others + " more selected" : null;
+        if (it == null || item == null || !string.Equals(it.Path, item.Path, StringComparison.OrdinalIgnoreCase) || it.Stamp != item.Stamp)
+        {
+            item = it;
+            if (bmp != null) { bmp.Dispose(); bmp = null; }
+            note = error = null; bmpW = bmpH = 0; reqSize = 0; fileStars = 0;
+            gen++;
+            Request();
+        }
+        Invalidate();
+    }
+
+    void Request()
+    {
+        if (item == null || !Visible) return;
+        if (item.Offline) { error = "Cloud-only: not stored on this PC, so it is not opened."; return; }
+        int size = WantSize;
+        if (reqSize >= size) return;
+        reqSize = size;
+        if (svc == null) svc = new ThumbService(1, Done);
+        host = FindForm();
+        int g = gen;
+        svc.Replace(new List<ThumbJob> { new ThumbJob { Path = item.Path, Size = size, Stamp = g } });   // Stamp carries the request number
+    }
+
+    void Done(ThumbJob j, ThumbResult r)               // worker thread
+    {
+        Control h = host;
+        if (!Util.Post(h, delegate
+        {
+            if (j.Stamp != gen || item == null || !string.Equals(j.Path, item.Path, StringComparison.OrdinalIgnoreCase)) { if (r.Bmp != null) r.Bmp.Dispose(); return; }
+            if (bmp != null) bmp.Dispose();
+            bmp = r.Bmp; bmpW = r.W; bmpH = r.H; note = r.Note; fileStars = r.FileStars; error = r.Bmp == null ? (r.Error ?? "Could not be opened.") : null;
+            Invalidate();
+        }) && r.Bmp != null) r.Bmp.Dispose();
+    }
+
+    protected override void OnResize(EventArgs e) { base.OnResize(e); Request(); Invalidate(); }
+    protected override void OnVisibleChanged(EventArgs e) { base.OnVisibleChanged(e); if (Visible) Request(); }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        g.Clear(BackColor);
+        int pad = Util.S(10);
+        if (item == null)
+        {
+            TextRenderer.DrawText(g, "Select a picture to preview it here", font, ClientRectangle, Color.Gray,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak);
+            return;
+        }
+        // the facts first, so the picture gets whatever height is left
+        var lines = new List<string>();
+        if (bmpW > 0) lines.Add(bmpW + " x " + bmpH + "    " + (note ?? "PC (standard image)"));
+        lines.Add(Util.FmtSize(item.Size) + "    " + new DateTime(item.Modified, DateTimeKind.Utc).ToLocalTime().ToString("yyyy-MM-dd HH:mm"));
+        if (mark != null && !mark.Empty) lines.Add(Marks.Describe(mark));
+        if ((mark == null || mark.Stars == 0) && fileStars > 0) lines.Add(Marks.StarText(fileStars) + "  rating stored in the file");
+        if (where != null) lines.Add("In: " + where);
+        if (selNote != null) lines.Add(selNote);
+        int lh = font.Height + Util.S(2);
+        int infoH = bold.Height + Util.S(6) + lines.Count * lh + (error != null ? lh * 2 : 0) + pad;
+        var pic = new Rectangle(pad, pad, Math.Max(1, ClientSize.Width - 2 * pad), Math.Max(1, ClientSize.Height - infoH - 2 * pad));
+        if (bmp != null)
+        {
+            double s = Math.Min((double)pic.Width / bmp.Width, (double)pic.Height / bmp.Height);
+            bool pixelArt = note != null;                            // retro pictures: enlarged with hard edges
+            if (s > 1 && pixelArt) s = Math.Max(1, Math.Floor(s));
+            int dw = Math.Max(1, (int)(bmp.Width * s)), dh = Math.Max(1, (int)(bmp.Height * s));
+            g.InterpolationMode = s > 1 && pixelArt ? InterpolationMode.NearestNeighbor : InterpolationMode.HighQualityBilinear;
+            g.PixelOffsetMode = PixelOffsetMode.Half;
+            g.DrawImage(bmp, pic.X + (pic.Width - dw) / 2, pic.Y + (pic.Height - dh) / 2, dw, dh);
+        }
+        else if (error == null)
+            TextRenderer.DrawText(g, "Loading...", font, pic, Color.Gray, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        int y = pic.Bottom + pad;
+        const TextFormatFlags fl = TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
+        TextRenderer.DrawText(g, item.Name, bold, new Rectangle(pad, y, ClientSize.Width - 2 * pad, bold.Height + 2), Color.White, fl);
+        y += bold.Height + Util.S(6);
+        if (error != null)
+        {
+            TextRenderer.DrawText(g, error, font, new Rectangle(pad, y, ClientSize.Width - 2 * pad, lh * 2), Color.FromArgb(255, 140, 90),
+                TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            y += lh * 2;
+        }
+        foreach (string l in lines)
+        {
+            Color c = mark != null && !mark.Empty && l == Marks.Describe(mark) ? Color.FromArgb(255, 205, 70)
+                    : l.EndsWith("rating stored in the file", StringComparison.Ordinal) ? Color.FromArgb(215, 215, 215) : Color.Silver;
+            TextRenderer.DrawText(g, l, font, new Rectangle(pad, y, ClientSize.Width - 2 * pad, lh), c, fl);
+            y += lh;
+        }
     }
 }
