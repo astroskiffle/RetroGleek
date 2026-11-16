@@ -1,6 +1,6 @@
 # RetroGleek
 
-![title](images/Title.jpg)
+![title](images/title.jpg)
 
 ![convert](images/convert.png)
 
