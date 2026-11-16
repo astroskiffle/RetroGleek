@@ -1,8 +1,12 @@
 # RetroGleek
 
-![title](images/title.jpg)
 
-![convert](images/convert.png)
+
+Most modern image viewers are bloated and lifeless. They stretch vintage art onto sharp 4K monitors, stripping away the soul of the original artwork and leaving behind harsh, raw pixels.
+
+Using advanced video shaders, RetroGleek accurately emulates the iconic quirks of obsolete visual hardware. It automatically replicates scanlines, warm phosphor glow, shadow masks, aperture grilles, and true-to-era color blending based on the image filetype it displays. And that’s only half the story. RetroGleek was built from the hardware blueprints of 48 distinct retro computer and gaming platforms. From classic CRT monitors to specific cable outputs, it simulates the entire visual signal path showing you your favorite retro images the way they were meant to be seen. Stop looking at sterile pixels. Rediscover the authentic glow of retro computing with RetroGleek. RetroGleek will also display modern image filetypes correctly and holds up as a great image viewer too. It won't beat the big commercial giants in the field on regular images, but it's small, and it's built for complete offline use.
+
+![title](images/title.jpg)
 
 A small, fast, **fully offline** image browser and viewer for Windows 10/11, with built-in support for
 **retro-computer picture formats** (Amiga, Atari, Commodore 64, ZX Spectrum, MSX, Amstrad CPC and hundreds more)
@@ -34,6 +38,8 @@ no NuGet packages and no internet connection.
   Nothing is ever overwritten: a name that is already taken gets a number added.
 - **Menu bar** with every command and its shortcut.
 - Dark interface, high-DPI aware.
+
+![convert](images/convert.png)
 
 ## Privacy and security
 
