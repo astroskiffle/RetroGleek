@@ -4,8 +4,8 @@ A small, fast, **fully offline** image browser and viewer for Windows, with buil
 **retro-computer picture formats** (Amiga, Atari, Commodore 64, ZX Spectrum, MSX, Amstrad CPC and hundreds more)
 through [RECOIL](https://github.com/pfusik/recoil).
 
-While countless alternative bloated image viewers simply display raw pixels on modern 4k monitors, RetroGleek brings vintage displays back to life.
-Using advanced video shaders, RetroGleek accurately emulates the iconic quirks of obsolete visual hardware. It automatically replicates scanlines, warm phosphor glow, shadow masks, aperture grilles, and true-to-era color blending based on the image it displays.
+While countless alternative bloated image viewers simply display raw pixels on modern 4k monitors, RetroGleek brings vintage image filetypes back to life.
+Using advanced video shaders, RetroGleek accurately emulates the iconic quirks of obsolete visual hardware. It automatically replicates scanlines, warm phosphor glow, shadow masks, aperture grilles, and true-to-era color blending based on the image filetype it displays.
 And that’s only half the story.
 RetroGleek was built from the hardware blueprints of 48 distinct retro computer and gaming platforms. From classic CRT monitors to specific cable outputs, it simulates the entire visual signal path showing you your favorite retro images the way they were meant to be seen on the original machines.
 Stop looking at sterile pixels. Rediscover the authentic glow of retro computing with RetroGleek.
