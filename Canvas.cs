@@ -638,7 +638,7 @@ sealed class Canvas : Control
                 try { c = WinCodec.Load(path, 0, true); }
                 catch (Exception cex) { throw new IOException(WinCodec.Why(path, cex)); }
                 p.Img = c.Bmp; p.W = c.W; p.H = c.H; p.Rot = c.Rot; p.FileStars = c.Stars;
-                p.Bytes = new FileInfo(path).Length;               // Note stays null: Note marks a retro picture
+                p.Bytes = c.Bytes; p.Exif = c.Exif;                // Note stays null: Note marks a retro picture
                 return p;
             }
             byte[] bytes = Util.ReadShared(path);             // one fast sequential read, no lock afterwards
@@ -1387,7 +1387,7 @@ sealed class Canvas : Control
         finally { fxBmp.UnlockBits(bd); }
     }
 
-    // "    \u2605\u2605\u2605  Red  \u2714 tagged" for the info bar ("" without marks)
+    // stars, label and tag for the info bar, e.g. "    (3 stars)  Red  (tick) tagged" ("" without marks)
     string MarkText()
     {
         Mark m = CurMark;

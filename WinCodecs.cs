@@ -27,6 +27,8 @@ sealed class CodecPic
     public int Stars;            // star rating stored in the file, 0 = none
     public int Frames = 1;       // frames in the file (an animated WebP shows its first frame)
     public string Format;        // e.g. "WebP (Windows codec)"
+    public long Bytes;           // the file's size (it was read whole, so no second look at the file is needed)
+    public List<string> Exif;    // readable camera details for the viewer's E panel (full-size decodes only), or null
 }
 
 static class WinCodec
@@ -97,12 +99,13 @@ static class WinCodec
     }
 
     // Decodes the first frame. maxSide > 0: decode straight to a picture no larger than maxSide x maxSide (much
-    // faster for big photos); 0 = full size. premultiplied: Format32bppPArgb (fastest to draw), else Format32bppArgb
-    // (exact pixels, for saving). Throws on any problem (use Why for the message). Any thread.
+    // faster for big photos); 0 = full size, and the camera details for the E panel are read too.
+    // premultiplied: Format32bppPArgb (fastest to draw), else Format32bppArgb (exact pixels, for saving).
+    // Throws on any problem (use Why for the message). Any thread.
     public static CodecPic Load(string path, int maxSide, bool premultiplied)
     {
         byte[] data = Util.ReadShared(path);
-        var r = new CodecPic { Format = Name(path) + " (Windows codec)" };
+        var r = new CodecPic { Format = Name(path) + " (Windows codec)", Bytes = data.Length };
         using (var ms = new MemoryStream(data, false))         // open until the pixels are copied (decoded on demand)
         {
             WI.BitmapDecoder dec = WI.BitmapDecoder.Create(ms, WI.BitmapCreateOptions.IgnoreColorProfile |
@@ -113,7 +116,7 @@ static class WinCodec
             r.Frames = dec.Frames.Count;
             r.W = f.PixelWidth; r.H = f.PixelHeight;
             if (r.W <= 0 || r.H <= 0) throw new FileFormatException("The file holds no picture.");
-            ReadMeta(path, f, r);
+            ReadMeta(path, f, r, maxSide <= 0);
             WI.BitmapSource src = f;
             if (maxSide > 0 && Math.Max(r.W, r.H) > maxSide)
                 src = Scaled(data, r.W >= r.H, maxSide) ?? Shrink(f, maxSide);
@@ -147,22 +150,188 @@ static class WinCodec
     }
 
     // orientation (camera RAW and JPEG XR only: the HEIF, AVIF, JPEG XL and WebP decoders hand pictures over
-    // the right way up already) and star rating
-    static void ReadMeta(string path, WI.BitmapFrame f, CodecPic r)
+    // the right way up already), star rating, and (details = true) the camera details for the E panel
+    static void ReadMeta(string path, WI.BitmapFrame f, CodecPic r, bool details)
     {
         WI.BitmapMetadata md = null;
         try { md = f.Metadata as WI.BitmapMetadata; } catch (Exception) { }
         if (md == null) return;
         try { int s = md.Rating; if (s > 0 && s <= 5) r.Stars = s; } catch (Exception) { }
         string e = (Path.GetExtension(path) ?? "").ToLowerInvariant();
-        if (!IsRaw(path) && e != ".jxr" && e != ".wdp" && e != ".hdp") return;
+        bool turns = IsRaw(path) || e == ".jxr" || e == ".wdp" || e == ".hdp";
+        if (turns)
+        {
+            try
+            {
+                object o = md.GetQuery("System.Photo.Orientation");
+                int v = o == null ? 1 : Convert.ToInt32(o);
+                r.Rot = v == 3 ? 2 : v == 6 ? 1 : v == 8 ? 3 : 0;
+            }
+            catch (Exception) { }
+        }
+        if (details) r.Exif = ExifLines(md, turns);
+    }
+
+    // ---- camera details for the E panel, in the same words and order as ExifInfo.Read gives them for JPEG photos.
+    // Read through Windows' photo metadata names (System.Photo.ExposureTime ...), which work the same for every
+    // format whose decoder can read EXIF (HEIF, AVIF, camera RAW, JPEG XR, WebP ...). Never throws; anything missing or
+    // unreadable is left out. GPS coordinates are shown only on screen; nothing is written or sent.
+    static List<string> ExifLines(WI.BitmapMetadata md, bool withOrientation)
+    {
+        var r = new List<string>();
         try
         {
-            object o = md.GetQuery("System.Photo.Orientation");
-            int v = o == null ? 1 : Convert.ToInt32(o);
-            r.Rot = v == 3 ? 2 : v == 6 ? 1 : v == 8 ? 3 : 0;
+            string make = Str(md, "System.Photo.CameraManufacturer"), model = Str(md, "System.Photo.CameraModel");
+            string cam = model;
+            if (make != null && (model == null || !model.StartsWith(make, StringComparison.OrdinalIgnoreCase)))
+                cam = model == null ? make : make + " " + model;
+            Add(r, "Camera", cam);
+            Add(r, "Lens", Str(md, "System.Photo.LensModel"));
+            Add(r, "Taken", Taken(md));
+
+            double v;
+            if (Ratio(Q(md, "System.Photo.ExposureTime"), out v) && v > 0)
+                Add(r, "Exposure", v < 1 ? "1/" + Math.Round(1 / v) + " s" : v.ToString("0.#") + " s");
+            if (Ratio(Q(md, "System.Photo.FNumber"), out v) && v > 0) Add(r, "Aperture", "f/" + v.ToString("0.0"));
+            int n;
+            if (Whole(Q(md, "System.Photo.ISOSpeed"), out n) && n > 0) Add(r, "ISO", n.ToString());
+            if (Ratio(Q(md, "System.Photo.FocalLength"), out v) && v > 0)
+            {
+                string fl = v.ToString("0.#") + " mm";
+                if (Whole(Q(md, "System.Photo.FocalLengthInFilm"), out n) && n > 0) fl += "  (" + n + " mm in 35 mm terms)";
+                Add(r, "Focal length", fl);
+            }
+            if (Ratio(Q(md, "System.Photo.ExposureBias"), out v) && Math.Abs(v) > 1e-9) Add(r, "Exposure bias", (v > 0 ? "+" : "") + v.ToString("0.##") + " EV");
+            if (Whole(Q(md, "System.Photo.Flash"), out n)) Add(r, "Flash", (n & 1) != 0 ? "fired" : "did not fire");
+            if (withOrientation && Whole(Q(md, "System.Photo.Orientation"), out n) && n >= 2 && n <= 8)
+            {
+                string[] o = { "", "", "mirrored", "rotated 180 degrees", "rotated 180 degrees, mirrored", "rotated 90 degrees, mirrored",
+                               "rotated 90 degrees", "rotated 270 degrees, mirrored", "rotated 270 degrees" };
+                Add(r, "Orientation", o[n]);
+            }
+            Add(r, "Software", Str(md, "System.ApplicationName"));
+            Add(r, "Artist", Str(md, "System.Author"));
+            Add(r, "Copyright", Str(md, "System.Copyright"));
+            Add(r, "Description", Str(md, "System.Title"));
+
+            double lat, lon;
+            if (Gps(md, "System.GPS.Latitude", "System.GPS.LatitudeRef", out lat) && Gps(md, "System.GPS.Longitude", "System.GPS.LongitudeRef", out lon))
+                Add(r, "GPS", Math.Abs(lat).ToString("0.00000") + (lat < 0 ? " S" : " N") + ", " + Math.Abs(lon).ToString("0.00000") + (lon < 0 ? " W" : " E"));
         }
         catch (Exception) { }
+        return r.Count > 0 ? r : null;
+    }
+
+    static void Add(List<string> r, string label, string value)
+    {
+        if (string.IsNullOrEmpty(value)) return;
+        if (value.Length > 80) value = value.Substring(0, 77) + "...";
+        r.Add(label + ":  " + value);
+    }
+
+    // one metadata value, or null (not there, or the decoder can't read that name)
+    static object Q(WI.BitmapMetadata md, string name)
+    {
+        try { return md.GetQuery(name); } catch (Exception) { return null; }
+    }
+
+    // text, or several texts (System.Author) joined; control characters removed
+    static string Str(WI.BitmapMetadata md, string name)
+    {
+        object o = Q(md, name);
+        string s = o as string;
+        string[] many = o as string[];
+        if (s == null && many != null) s = string.Join("; ", many);
+        if (s == null) return null;
+        var sb = new System.Text.StringBuilder(s.Length);
+        foreach (char c in s) if (c >= ' ' && c != '\uFFFD') sb.Append(c);
+        s = sb.ToString().Trim();
+        return s.Length > 0 ? s : null;
+    }
+
+    // Windows hands EXIF rational numbers over as 64-bit numbers: numerator in the low 32 bits, denominator in the
+    // high 32 bits (unsigned, or signed for the exposure bias)
+    static bool Ratio(object o, out double v)
+    {
+        v = 0;
+        if (o == null) return false;
+        try
+        {
+            if (o is ulong)
+            {
+                ulong u = (ulong)o;
+                uint num = (uint)(u & 0xFFFFFFFFUL), den = (uint)(u >> 32);
+                if (den == 0) return false;
+                v = (double)num / den;
+                return true;
+            }
+            if (o is long)
+            {
+                long l = (long)o;
+                int num = unchecked((int)(l & 0xFFFFFFFFL)), den = unchecked((int)(l >> 32));
+                if (den == 0) return false;
+                v = (double)num / den;
+                return true;
+            }
+            if (o is double || o is float || o is decimal) { v = Convert.ToDouble(o); return !double.IsNaN(v) && !double.IsInfinity(v); }
+        }
+        catch (Exception) { }
+        return false;
+    }
+
+    static bool Whole(object o, out int n)
+    {
+        n = 0;
+        if (o == null) return false;
+        try
+        {
+            ushort[] us = o as ushort[];
+            if (us != null) { if (us.Length == 0) return false; n = us[0]; return true; }
+            if (o is byte || o is sbyte || o is short || o is ushort || o is int || o is uint || o is long || o is ulong)
+            {
+                n = Convert.ToInt32(o);
+                return true;
+            }
+        }
+        catch (Exception) { }
+        return false;
+    }
+
+    // the date taken, written as in the EXIF panel for JPEGs (2026-11-16 10:22:05)
+    static string Taken(WI.BitmapMetadata md)
+    {
+        object o = Q(md, "System.Photo.DateTaken");
+        DateTime dt = DateTime.MinValue;
+        bool got = false;
+        try
+        {
+            if (o is System.Runtime.InteropServices.ComTypes.FILETIME)
+            {
+                var ft = (System.Runtime.InteropServices.ComTypes.FILETIME)o;
+                dt = DateTime.FromFileTime(((long)ft.dwHighDateTime << 32) | (uint)ft.dwLowDateTime);
+                got = true;
+            }
+            else if (o is DateTime) { dt = (DateTime)o; got = true; }
+        }
+        catch (Exception) { }
+        if (got) return dt.ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
+        try { string s = md.DateTaken; return string.IsNullOrEmpty(s) ? null : s; } catch (Exception) { return null; }
+    }
+
+    // degrees / minutes / seconds -> signed decimal degrees (south and west are negative)
+    static bool Gps(WI.BitmapMetadata md, string valueName, string refName, out double deg)
+    {
+        deg = 0;
+        object o = Q(md, valueName);
+        ulong[] u = o as ulong[];
+        if (u == null || u.Length < 3) return false;
+        double d, m, s;
+        if (!Ratio(u[0], out d) || !Ratio(u[1], out m) || !Ratio(u[2], out s)) return false;
+        deg = d + m / 60 + s / 3600;
+        if (deg == 0 || deg > 180) return false;
+        string rf = Str(md, refName);
+        if (rf != null && (rf.StartsWith("S") || rf.StartsWith("W"))) deg = -deg;
+        return true;
     }
 
     // straight into a GDI+ bitmap's memory (no unsafe code, no copy in between)

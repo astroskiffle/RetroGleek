@@ -127,14 +127,70 @@ static class Util
         return p;
     }
 
+    // Copies a folder with everything in it. Cloud placeholders (files, and folders whose contents are not stored on
+    // this PC) are never opened or copied, so a copy can't start a download: they are left out, and once everything
+    // else is copied an IOException says how many were left out. The caller lists that message with the folder's
+    // name, as it does for any other copy problem. Links and junctions are never followed.
     public static void CopyDir(string src, string dst)
     {
+        if ((File.GetAttributes(src) & CloudMask) != 0)
+            throw new IOException("cloud-only folder that isn't stored on this PC, so it was left alone.");
+        int files = 0, folders = 0;
+        CopyDir(src, dst, ref files, ref folders);
+        if (files == 0 && folders == 0) return;
+        throw new IOException("copied, except " + CloudText(files, folders) + " that " + (files + folders == 1 ? "isn't" : "aren't")
+                              + " stored on this PC, so " + (files + folders == 1 ? "it was" : "they were") + " left out.");
+    }
+
+    // "3 cloud-only files and 1 cloud-only folder"
+    public static string CloudText(int files, int folders)
+    {
+        return (files > 0 ? files + (files == 1 ? " cloud-only file" : " cloud-only files") : "")
+             + (files > 0 && folders > 0 ? " and " : "")
+             + (folders > 0 ? folders + (folders == 1 ? " cloud-only folder" : " cloud-only folders") : "");
+    }
+
+    // Counts the cloud placeholders inside a folder (and the folder itself, if it is one) from their attributes only:
+    // nothing is opened, and a cloud-only folder is counted without being listed, so counting downloads nothing.
+    // Stops after looking at 100,000 items (more = true), which also ends any loop of links.
+    public static void CloudInside(string dir, out int files, out int folders, out bool more)
+    {
+        files = 0; folders = 0; more = false;
+        if ((File.GetAttributes(dir) & CloudMask) != 0) { folders = 1; return; }
+        int budget = 100000;
+        var stack = new Stack<string>();
+        stack.Push(dir);
+        while (stack.Count > 0)
+        {
+            string d = stack.Pop();
+            foreach (string f in Directory.GetFiles(d))
+            {
+                if (--budget < 0) { more = true; return; }
+                if ((File.GetAttributes(f) & CloudMask) != 0) files++;
+            }
+            foreach (string sub in Directory.GetDirectories(d))
+            {
+                if (--budget < 0) { more = true; return; }
+                if ((File.GetAttributes(sub) & CloudMask) != 0) { folders++; continue; }
+                stack.Push(sub);              // folders synced by OneDrive can look like links, so they are looked into too
+            }
+        }
+    }
+
+    static void CopyDir(string src, string dst, ref int skippedFiles, ref int skippedFolders)
+    {
         Directory.CreateDirectory(dst);
-        foreach (string f in Directory.GetFiles(src)) File.Copy(f, Path.Combine(dst, Path.GetFileName(f)));
+        foreach (string f in Directory.GetFiles(src))
+        {
+            if ((File.GetAttributes(f) & CloudMask) != 0) { skippedFiles++; continue; }   // reading the attributes downloads nothing
+            File.Copy(f, Path.Combine(dst, Path.GetFileName(f)));
+        }
         foreach (string d in Directory.GetDirectories(src))
         {
-            if ((File.GetAttributes(d) & FileAttributes.ReparsePoint) != 0) continue;   // never follow links/junctions
-            CopyDir(d, Path.Combine(dst, Path.GetFileName(d)));
+            FileAttributes a = File.GetAttributes(d);
+            if ((a & CloudMask) != 0) { skippedFolders++; continue; }                     // listing it could fetch it from the cloud
+            if ((a & FileAttributes.ReparsePoint) != 0) continue;                       // never follow links/junctions
+            CopyDir(d, Path.Combine(dst, Path.GetFileName(d)), ref skippedFiles, ref skippedFolders);
         }
     }
 }

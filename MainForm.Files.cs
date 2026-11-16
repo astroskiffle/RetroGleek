@@ -436,8 +436,34 @@ partial class MainForm
         });
     }
 
+    // Folders that would go to another drive and hold cloud placeholders (OneDrive and the like): their path, and
+    // what they hold. Windows moves a folder to another drive by copying it, which downloads every cloud-only file
+    // in it first; a move on the same drive only renames, so nothing is downloaded and nothing is listed here.
+    // Counting reads attributes only, so it downloads nothing itself.
+    static Dictionary<string, string> CloudFoldersCrossingDrives(List<string> srcs, string dest)
+    {
+        var found = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        string droot = Path.GetPathRoot(Path.GetFullPath(dest));
+        foreach (string raw in srcs)
+        {
+            string s = raw.TrimEnd('\\', '/');
+            try
+            {
+                if (!Directory.Exists(s) || IsRootPath(s)) continue;
+                if (string.Equals(Path.GetPathRoot(Path.GetFullPath(s)), droot, StringComparison.OrdinalIgnoreCase)) continue;
+                int files, folders;
+                bool more;
+                Util.CloudInside(s, out files, out folders, out more);
+                if (files + folders > 0 && !found.ContainsKey(s)) found.Add(s, Util.CloudText(files, folders) + (more ? " (or more)" : ""));
+            }
+            catch (Exception) { }                          // unreadable: the move itself will report the problem
+        }
+        return found;
+    }
+
     // Moves files and folders into dest with Windows' own file operation (progress window for big moves, works
     // across drives). Never overwrites: a name that is taken becomes "name (2)". Runs on the UI thread, like delete.
+    // A folder that would go to another drive with cloud-only files inside is moved only after you say so.
     // Returns true if at least one item was moved.
     bool MoveItems(List<string> srcs, string dest)
     {
@@ -447,6 +473,31 @@ partial class MainForm
         string gd = grid.Dir;
         int moved = 0;
         var undoPairs = new List<KeyValuePair<string, string>>();
+        HashSet<string> leaveOut = null;                   // folders with cloud-only files that you chose to leave where they are
+        Cursor = Cursors.WaitCursor;
+        Dictionary<string, string> cloudy;
+        try { cloudy = CloudFoldersCrossingDrives(srcs, dest); }
+        finally { Cursor = Cursors.Default; }
+        if (cloudy.Count > 0)
+        {
+            var lines = new List<string>();
+            foreach (KeyValuePair<string, string> kv in cloudy)
+            {
+                if (lines.Count == 8) { lines.Add("  ..."); break; }
+                lines.Add("  " + Path.GetFileName(kv.Key) + ":  " + kv.Value);
+            }
+            bool one = cloudy.Count == 1;
+            string ask = "Moving to another drive means Windows copies " + (one ? "this folder" : "these folders") +
+                         ", and it would first download what " + (one ? "it holds" : "they hold") +
+                         " that is stored only in the cloud (OneDrive or similar):\n\n" + string.Join("\n", lines) + "\n\n" +
+                         "Yes:  move anyway (Windows downloads those files; RetroGleek itself never goes online).\n" +
+                         "No:  leave " + (one ? "this folder" : "these folders") + " where " + (one ? "it is" : "they are") + " and move the rest.\n" +
+                         "Cancel:  move nothing.";
+            DialogResult answer = MessageBox.Show(this, ask, "Cloud-only files", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning,
+                                                  MessageBoxDefaultButton.Button2);
+            if (answer == DialogResult.Cancel) return false;
+            if (answer == DialogResult.No) leaveOut = new HashSet<string>(cloudy.Keys, StringComparer.OrdinalIgnoreCase);
+        }
         Cursor = Cursors.WaitCursor;
         try
         {
@@ -457,6 +508,7 @@ partial class MainForm
                 if (!isDir && !File.Exists(s)) continue;
                 string name = Path.GetFileName(s);
                 if (name.Length == 0 || IsRootPath(s)) { errs.Add(s + ": a whole drive can't be moved."); continue; }
+                if (leaveOut != null && leaveOut.Contains(s)) { errs.Add(name + ": left where it is (it holds cloud-only files)."); continue; }
                 string why = RefuseSource(s);
                 if (why != null) { errs.Add(name + ": " + why); continue; }
                 string from = Path.GetDirectoryName(s);
@@ -1113,73 +1165,6 @@ partial class MainForm
             int d2 = done;
             Util.Post(this, delegate { RotateDone(d2, errs); });
         });
-    }
-
-    // Edit > Rating > Write my ratings into the JPEG files: your RetroGleek star rating of each JPEG, written into the
-    // photo's XMP (and its Windows EXIF rating tags if it has them) so other programs see it. Changes files: always asks.
-    void WriteRatings()
-    {
-        if (comparing || rotateBusy) return;
-        List<string> paths;
-        if (viewing) { paths = new List<string>(); string p = canvas.CurrentPath; if (p != null) paths.Add(p); }
-        else paths = MarkTargets();
-        var jobs = new List<KeyValuePair<string, int>>();
-        int notJpeg = 0, noRating = 0;
-        foreach (string p in paths)
-        {
-            if (!JpegRotate.IsJpeg(p)) { notJpeg++; continue; }
-            Mark m = Marks.ForFile(p);
-            if (m == null || m.Stars <= 0) { noRating++; continue; }
-            jobs.Add(new KeyValuePair<string, int>(p, m.Stars));
-        }
-        if (jobs.Count == 0)
-        {
-            Warn(notJpeg == paths.Count ? "Ratings can only be written into JPEG photos. For every other format they stay in RetroGleek's marks.tsv."
-                                        : "None of these JPEG photos has a RetroGleek rating to write (give one with Alt+1 .. Alt+5 first).");
-            return;
-        }
-        string what = jobs.Count == 1 ? "\"" + Path.GetFileName(jobs[0].Key) + "\"" : jobs.Count + " JPEG photos";
-        string msg = "Write your star rating into " + what + "?\n\n" +
-                     "This changes " + (jobs.Count == 1 ? "the file" : "the files") + " on disk so Windows Explorer, Lightroom and other programs " +
-                     "see the rating too. Only the photo's information block (XMP) changes; the picture itself is copied byte for byte, " +
-                     "so no quality is lost. Each new file is checked before it replaces the old one." +
-                     (notJpeg > 0 ? "\n\n" + notJpeg + (notJpeg == 1 ? " picture is not a JPEG" : " pictures are not JPEGs") + " and stays as it is." : "") +
-                     (noRating > 0 ? "\n\n" + noRating + (noRating == 1 ? " JPEG has" : " JPEGs have") + " no RetroGleek rating and " + (noRating == 1 ? "is" : "are") + " left alone." : "");
-        if (MessageBox.Show(this, msg, "Write ratings into the files", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
-        rotateBusy = true;
-        status.Text = "  Writing ratings into " + what + "...";
-        ThreadPool.QueueUserWorkItem(delegate
-        {
-            int done = 0;
-            var errs = new List<string>();
-            foreach (KeyValuePair<string, int> j in jobs)
-            {
-                try
-                {
-                    var fi = new FileInfo(j.Key);
-                    long oldSize = fi.Length, oldMod = fi.LastWriteTimeUtc.Ticks;
-                    JpegRating.Write(j.Key, j.Value);
-                    Marks.Rebind(j.Key, oldSize, oldMod);           // your marks stay with the photo
-                    done++;
-                }
-                catch (Exception ex) { errs.Add(Path.GetFileName(j.Key) + ": " + Util.Why(ex)); }
-            }
-            int d2 = done;
-            Util.Post(this, delegate { WriteRatingsDone(d2, errs); });
-        });
-    }
-
-    void WriteRatingsDone(int done, List<string> errs)
-    {
-        rotateBusy = false;
-        if (viewing) { canvas.Reload(); if (done > 0) canvas.ShowMessage("Rating written into the file"); }
-        else if (grid.Dir != null) grid.Rescan();
-        status.Text = "  Wrote the rating into " + done + (done == 1 ? " photo" : " photos") + (errs.Count > 0 ? ", " + errs.Count + " left as they were" : "");
-        if (errs.Count > 0)
-        {
-            List<string> e = errs.Count > 8 ? errs.GetRange(0, 8) : errs;
-            Warn((done > 0 ? "Some photos were left as they were:" : "Nothing was written:") + "\n\n" + string.Join("\n", e) + (errs.Count > 8 ? "\n..." : ""));
-        }
     }
 
     void RotateDone(int done, List<string> errs)
@@ -1900,8 +1885,6 @@ partial class MainForm
         ToolStripMenuItem rate = MenuSub(edit, "Rati&ng", canMark);
         for (int ri = 0; ri <= 5; ri++)
             MenuKey(rate, ri == 0 ? "&No rating" : "&" + ri + "  " + Marks.StarText(ri), "Alt+" + ri, Keys.Alt | (Keys)((int)Keys.D0 + ri), null, null);
-        MenuSep(rate);
-        MenuEntry(rate, "&Write my ratings into the JPEG files...", "", delegate { WriteRatings(); }, delegate { return !rotateBusy; }, null);
         ToolStripMenuItem lab = MenuSub(edit, "Colour &label", canMark);
         for (int li = 0; li <= 5; li++)
             MenuKey(lab, "&" + li + "  " + Marks.LabelNames[li], "Shift+" + li, Keys.Shift | (Keys)((int)Keys.D0 + li), null, null);
@@ -2125,12 +2108,7 @@ partial class MainForm
     {
         using (var d = new OpenFileDialog())
         {
-            var pats = new List<string>();
-            foreach (string x in Util.Exts) pats.Add("*" + x);
-            var more = new List<string>(WinCodec.Exts);
-            more.Sort(StringComparer.OrdinalIgnoreCase);
-            foreach (string x in more) pats.Add("*" + x);
-            d.Filter = "Images|" + string.Join(";", pats.ToArray()) + "|All files|*.*";
+            d.Filter = "Images|*.jpg;*.jpeg;*.jpe;*.jfif;*.png;*.bmp;*.dib;*.gif;*.tif;*.tiff|All files|*.*";
             if (grid.Dir != null) d.InitialDirectory = grid.Dir;
             if (d.ShowDialog(this) == DialogResult.OK) OpenImage(d.FileName);
         }

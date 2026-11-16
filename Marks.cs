@@ -39,6 +39,10 @@ static class Marks
     static bool loaded;
     // name + size + date -> marked paths, to find a mark again after Explorer moved or renamed the file's folder
     static readonly Dictionary<string, List<string>> byFacts = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+    // folder + size + date -> marked paths, to find a mark again after Explorer renamed the file itself
+    static readonly Dictionary<string, List<string>> byPlace = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+    // pictures already found to be too uncertain to take a renamed file's mark (asked again only after marks change)
+    static readonly HashSet<string> unsure = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     static bool factsDirty = true;
     public static bool ReadOnly;                            // the command-line audit: marks.tsv is read, never written
 
@@ -137,48 +141,96 @@ static class Marks
         }
     }
 
-    // A picture with no mark of its own: was it moved outside RetroGleek (in Explorer, say)? If a mark belongs to a
-    // file of the same name, size and date that is no longer where it was - on a drive that is still there, so an
-    // unplugged USB stick never loses its marks - the mark moves to this path. A copy never takes a mark (the
-    // original is still there). Under the lock.
+    // A picture with no mark of its own: was it moved or renamed outside RetroGleek (in Explorer, say)? Under the lock.
+    //  1. Moved, or its folder moved or renamed: a mark belongs to a file of the same name, size and date that is no
+    //     longer where it was - on a drive that is still there, so an unplugged USB stick never loses its marks.
+    //  2. Renamed on its own: a mark belongs to a file in this same folder, with the same size and date, that is no
+    //     longer there. Taken only when it is certain: exactly one such marked file has gone, and this picture is the
+    //     only file in the folder with that size and date (so a copy or a duplicate never takes it).
+    // A copy never takes a mark: the original is still there.
     static Mark Adopt(string path, long size, long modified)
     {
         if (map.Count == 0) return null;
-        if (factsDirty)
-        {
-            byFacts.Clear();
-            foreach (KeyValuePair<string, Mark> kv in map)
-            {
-                string key = Facts(kv.Key, kv.Value.Size, kv.Value.Modified);
-                List<string> l;
-                if (!byFacts.TryGetValue(key, out l)) byFacts[key] = l = new List<string>();
-                l.Add(kv.Key);
-            }
-            factsDirty = false;
-        }
+        if (factsDirty) Index();
         List<string> cands;
-        if (!byFacts.TryGetValue(Facts(path, size, modified), out cands)) return null;
-        foreach (string old in cands)
+        if (byFacts.TryGetValue(Facts(path, size, modified), out cands))
         {
-            try
+            foreach (string old in cands)
             {
-                string root = Path.GetPathRoot(old);
-                if (string.IsNullOrEmpty(root) || !Directory.Exists(root) || File.Exists(old)) continue;
-                if (!File.Exists(path)) return null;
-                Mark m = map[old];
-                map.Remove(old);
-                map[path] = m;
-                Save();
-                return m;
+                try
+                {
+                    string root = Path.GetPathRoot(old);
+                    if (string.IsNullOrEmpty(root) || !Directory.Exists(root) || File.Exists(old)) continue;
+                    if (!File.Exists(path)) return null;
+                    return Take(old, path);
+                }
+                catch (Exception) { }
             }
-            catch (Exception) { }
         }
+        string place = Place(path, size, modified);
+        if (!byPlace.TryGetValue(place, out cands) || unsure.Contains(path)) return null;
+        try
+        {
+            string gone = null;
+            int goneCount = 0;
+            foreach (string old in cands)
+                if (!File.Exists(old)) { gone = old; goneCount++; }
+            if (goneCount == 1 && File.Exists(path) && OnlyOneLike(path, size, modified)) return Take(gone, path);
+        }
+        catch (Exception) { }
+        unsure.Add(path);                                   // not certain: leave it, and don't look in the folder again
         return null;
+    }
+
+    static Mark Take(string old, string path)
+    {
+        Mark m = map[old];
+        map.Remove(old);
+        map[path] = m;
+        Save();
+        return m;
+    }
+
+    static void Index()
+    {
+        byFacts.Clear();
+        byPlace.Clear();
+        unsure.Clear();
+        foreach (KeyValuePair<string, Mark> kv in map)
+        {
+            AddTo(byFacts, Facts(kv.Key, kv.Value.Size, kv.Value.Modified), kv.Key);
+            AddTo(byPlace, Place(kv.Key, kv.Value.Size, kv.Value.Modified), kv.Key);
+        }
+        factsDirty = false;
+    }
+
+    static void AddTo(Dictionary<string, List<string>> d, string key, string path)
+    {
+        List<string> l;
+        if (!d.TryGetValue(key, out l)) d[key] = l = new List<string>();
+        l.Add(path);
+    }
+
+    // is this picture the only file in its folder with this size and date? (one listing of the folder; nothing is
+    // opened, so cloud placeholders are not downloaded)
+    static bool OnlyOneLike(string path, long size, long modified)
+    {
+        string dir = Path.GetDirectoryName(path);
+        if (string.IsNullOrEmpty(dir)) return false;
+        int n = 0;
+        foreach (FileInfo fi in new DirectoryInfo(dir).GetFiles())
+            if (fi.Length == size && fi.LastWriteTimeUtc.Ticks == modified && ++n > 1) return false;
+        return n == 1;
     }
 
     static string Facts(string path, long size, long modified)
     {
         return Path.GetFileName(path) + "|" + size.ToString(CultureInfo.InvariantCulture) + "|" + modified.ToString(CultureInfo.InvariantCulture);
+    }
+
+    static string Place(string path, long size, long modified)
+    {
+        return (Path.GetDirectoryName(path) ?? "") + "|" + size.ToString(CultureInfo.InvariantCulture) + "|" + modified.ToString(CultureInfo.InvariantCulture);
     }
 
     // the mark of a file on disk (reads its size and date), or null
