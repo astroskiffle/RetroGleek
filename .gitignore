@@ -6,6 +6,9 @@
 bin/
 obj/
 
+# personal settings written by RetroGleek when it closes
+settings.ini
+
 # python
 __pycache__/
 *.pyc
