@@ -1,8 +1,23 @@
 # RetroGleek
 
-A small, fast, **fully offline** image browser and viewer for Windows 10/11, with built-in support for
+A small, fast, **fully offline** image browser and viewer for Windows, with built-in support for
 **retro-computer picture formats** (Amiga, Atari, Commodore 64, ZX Spectrum, MSX, Amstrad CPC and hundreds more)
 through [RECOIL](https://github.com/pfusik/recoil).
+
+![title](images/title.jpg)
+
+### See Your Retro Images the Way They Were Meant to Be Seen.
+
+Modern screens make classic pixel art look cold, flat, and sterile. RetroGleek brings back the warmth, depth, and unmistakable soul of vintage hardware.
+Powered by advanced video shaders, RetroGleek doesn't just slap a filter on your screen, it simulates the entire visual signal path. From the subtle quirks of specific cable outputs to the physical glass of classic CRT monitors, it automatically replicates:
+
+* Authentic scanlines & warm phosphor glow
+* True-to-era color blending
+* Detailed shadow masks & aperture grilles
+
+### More Than Just a Nostalgia Machine
+
+While RetroGleek shines at breathing life into vintage visuals, it also doubles as a fast, reliable image viewer for modern file types. It doesn't try to compete with bloated commercial software, instead, it stays lightweight, respects your privacy, and is built for 100% offline use.
 
 It builds into **one small `.exe`** using the C# compiler that already ships with Windows: no SDK, no installer,
 no NuGet packages and no internet connection.
