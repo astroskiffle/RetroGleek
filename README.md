@@ -9,7 +9,7 @@ of the screens it was made for.
 
 It doesn't just lay a filter over the picture: it recreates the path from the computer to your eyes, from the
 cable the signal travelled down to the phosphors and the curved glass in front of them. Press **A** and every
-picture gets the usual screen of its own computer:
+picture gets the screen of its own computer:
 
 * Scanlines and a soft phosphor glow
 * Colours that blend as they did through S-Video and composite cables, so dithering melts into new shades
