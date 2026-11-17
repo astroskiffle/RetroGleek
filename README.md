@@ -24,8 +24,6 @@ and many more, 567 file extensions in all) thanks to [RECOIL](https://github.com
 Press **Shift+O** on any photo to see it as a ZX Spectrum, C64, Amstrad CPC or MSX would have shown it, with
 each machine's real colour limits, then save it as a file the real computer can load. Animated GIFs play too.
 
-![A photo beside the same photo converted for the ZX Spectrum](images/convert.png)
-
 ### More than a nostalgia machine
 
 RetroGleek is also a fast, dependable viewer for everyday photos: JPEG, PNG, WebP, HEIC, AVIF, camera RAW and
@@ -34,6 +32,8 @@ Windows 10 and 11.
 
 It builds into **one small `.exe`** using the C# compiler that already ships with Windows: no SDK, no installer,
 no NuGet packages and no internet connection.
+
+![A photo beside the same photo converted for the ZX Spectrum](images/convert.png)
 
 ## Download
 
