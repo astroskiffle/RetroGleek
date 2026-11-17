@@ -2,7 +2,7 @@
 
 ![A Commodore 64 picture in RetroGleek, shown on a simulated CRT with scanlines and glow](images/title.jpg)
 
-### See your retro pictures the way they were meant to be seen
+### 📺 See your retro pictures the way they were meant to be seen
 
 Modern screens make classic pixel art look cold, flat and sterile. RetroGleek brings back the warmth and depth
 of the screens it was made for.
@@ -19,14 +19,14 @@ picture gets the usual screen of its own computer:
 It opens hundreds of retro formats out of the box (Amiga, Atari, Commodore 64, ZX Spectrum, MSX, Amstrad CPC
 and many more, 567 file extensions in all) thanks to [RECOIL](https://github.com/pfusik/recoil).
 
-### Your photos on an 8-bit computer
+### 🕹️ Your photos on an 8-bit computer
 
 Press **Shift+O** on any photo to see it as a ZX Spectrum, C64, Amstrad CPC or MSX would have shown it, with
 each machine's real colour limits, then save it as a file the real computer can load. Animated GIFs play too.
 
 ![A photo beside the same photo converted for the ZX Spectrum](images/convert.png)
 
-### More than a nostalgia machine
+### 🖼️ More than a nostalgia machine
 
 RetroGleek is also a fast, dependable viewer for everyday photos: JPEG, PNG, WebP, HEIC, AVIF, camera RAW and
 more. It doesn't try to be a photo editor. It stays small, respects your privacy, and works 100% offline on
@@ -35,17 +35,19 @@ Windows 10 and 11.
 It builds into **one small `.exe`** using the C# compiler that already ships with Windows: no SDK, no installer,
 no NuGet packages and no internet connection.
 
-## Download
+<a id="download"></a>
+
+## ⬇️ Download
 
 **Windows 10 and 11.** Go to the [Releases](https://github.com/astroskiffle/RetroGleek/releases) page, download
 `RetroGleek.exe`, put it in a folder of its own (it keeps its settings next to itself) and double-click it.
 Nothing to install.
 
-RetroGleek isn't signed, so the first time Windows may say "Windows protected your PC": click **More info**, then
+⚠️ RetroGleek isn't signed, so the first time Windows may say "Windows protected your PC": click **More info**, then
 **Run anyway**. The [Antivirus note](#antivirus-note) explains why some scanners are wary of new programs. Prefer
 to build it yourself from the source? See [Build](#build).
 
-To check your copy, compare its SHA-256 fingerprint with the one listed on the release. Open a Command Prompt in
+✅ To check your copy, compare its SHA-256 fingerprint with the one listed on the release. Open a Command Prompt in
 the folder with `RetroGleek.exe` and type:
 
 ```
@@ -56,29 +58,29 @@ The long string of letters and numbers it shows must match the release's exactly
 `Get-FileHash RetroGleek.exe` gives the same value in capital letters; capitals don't matter.) If it differs,
 don't run the file: download it again from the Releases page.
 
-## Quick start
+## 🚀 Quick start
 
-1. **Get it.** [Download](#download) `RetroGleek.exe`, or put all the source files in one folder and double-click
+1. ⬇️ **Get it.** [Download](#download) `RetroGleek.exe`, or put all the source files in one folder and double-click
    **`build.bat`**, which makes `RetroGleek.exe` next to them in a few seconds (see [Build](#build)).
-2. **Open a folder.** Start `RetroGleek.exe` and click a folder in the tree on the left, type a path in the address bar
+2. 📂 **Open a folder.** Start `RetroGleek.exe` and click a folder in the tree on the left, type a path in the address bar
    (**Ctrl+L**), or drag a folder onto the window.
-3. **Look through it.** Arrow keys move, **Enter** or a double-click opens a picture, **Left / Right** step through
+3. 👀 **Look through it.** Arrow keys move, **Enter** or a double-click opens a picture, **Left / Right** step through
    the folder, **Esc** goes back. Type in the **Filter** box (**Ctrl+F**) to narrow the list; drag the **Size** slider
    for bigger thumbnails.
-4. **Retro pictures.** Amiga, C64, ZX Spectrum, Atari and hundreds of other formats are listed with everything else
+4. 📺 **Retro pictures.** Amiga, C64, ZX Spectrum, Atari and hundreds of other formats are listed with everything else
    (**F8** hides them). In the viewer, **A** gives each picture the screen of its own computer (scanlines, phosphor
    mask, TV signal), **O** turns the effects off and on, and **Shift+O** shows the picture with and without them side
    by side.
-5. **A photo on an 8-bit computer.** Open any photo and press **Shift+O**: the right side shows it as it might look on
+5. 🕹️ **A photo on an 8-bit computer.** Open any photo and press **Shift+O**: the right side shows it as it might look on
    a ZX Spectrum, C64, Amstrad CPC or MSX. **Q** changes the computer, **D** the dithering, **Shift+F** fills the
    screen, and **Ctrl+S** saves the computer's own file plus a PNG to share. Animated GIFs play too.
-6. **Keep the best.** **Alt+1** .. **Alt+5** rate a picture, **Shift+1** .. **Shift+5** give it a colour label, **X**
+6. ⭐ **Keep the best.** **Alt+1** .. **Alt+5** rate a picture, **Shift+1** .. **Shift+5** give it a colour label, **X**
    tags it; the **Show** pull-down then lists only those.
 
 Everything is in the **menu bar**, with its shortcut, and **F1** lists every key on one page. Nothing is ever
 overwritten without asking, and RetroGleek never goes online.
 
-## Features
+## ✨ Features
 
 | | |
 |---|---|
@@ -110,7 +112,7 @@ overwritten without asking, and RetroGleek never goes online.
 - **Menu bar** with every command and its shortcut.
 - Dark interface, high-DPI aware.
 
-## Privacy and security
+## 🔒 Privacy and security
 
 - **No network code at all.** No sockets, HTTP, telemetry, update checks, licensing or cloud APIs. The program uses
   only the .NET Framework that ships with Windows (`System`, `System.Drawing`, `System.Windows.Forms`,
@@ -134,7 +136,9 @@ overwritten without asking, and RetroGleek never goes online.
   picture). Any decoding error is caught and shown as a message instead of crashing the viewer.
 - The five standard formats are decoded by Windows' own GDI+, which Windows Update keeps patched.
 
-## Build
+<a id="build"></a>
+
+## 🛠️ Build
 
 Requirements: Windows 10 or 11 (which includes .NET Framework 4.x and its C# compiler).
 
@@ -149,14 +153,14 @@ The source is written in C# 5 so that the compiler built into Windows can build 
 Run it with `RetroGleek.exe`, optionally followed by a folder or an image path, e.g. `RetroGleek.exe C:\Pictures`.
 You can also drag a file or folder onto the window, or use **Ctrl+O**.
 
-## Using it
+## ⌨️ Using it
 
 Everything is in the **menu bar** (File, Edit, View, Effects, Go, Tools, Settings, Help; press **Alt** to use it from the
 keyboard), and every menu entry shows its keyboard shortcut. Entries that don't apply right now (for example viewer
 commands while you are browsing) are greyed out. **F1** lists every key on one page. The menu bar is hidden in
 fullscreen.
 
-**Browser (folder tree and thumbnails)**
+**🗂️ Browser (folder tree and thumbnails)**
 
 | Action | Keys / mouse |
 |---|---|
@@ -199,7 +203,7 @@ fullscreen.
 While you are typing in the filter or address box, editing keys (Del, Backspace, Ctrl+C / V ...) act on the text,
 never on your files.
 
-**Viewer**
+**🔍 Viewer**
 
 | Action | Keys / mouse |
 |---|---|
@@ -239,7 +243,7 @@ never on your files.
 
 Everywhere: **F11** fullscreen, **Ctrl+O** open, **F1** every key on one page, plus about / credits.
 
-## Command-line audit
+## 📋 Command-line audit
 
 The folder audit can also run from a batch file, PowerShell or Windows Task Scheduler, with no window:
 
@@ -283,7 +287,7 @@ One report per subfolder:
 for /d %%F in ("D:\Retro\*") do RetroGleek.exe --audit "%%F" --out "D:\Reports\%%~nxF.html" --overwrite
 ```
 
-## Retro-computer formats (RECOIL)
+## 💾 Retro-computer formats (RECOIL)
 
 - RECOIL supports 567 file extensions. They are **shown by default**; press **F8**, use the right-click menu, or start
   with `--no-retro` to hide them.
@@ -297,7 +301,9 @@ for /d %%F in ("D:\Retro\*") do RetroGleek.exe --audit "%%F" --out "D:\Reports\%
 - `RECOIL.cs` is a **modified, machine-generated copy** of RECOIL's C# output (C# 5 syntax, lower memory caps). See
   [`THIRD-PARTY-NOTICES.txt`](THIRD-PARTY-NOTICES.txt). Regenerate it with `tools/downgrade_recoil.py`.
 
-## Modern formats (WebP, AVIF, HEIC, JPEG XL, camera RAW)
+<a id="modern-formats-webp-avif-heic-jpeg-xl-camera-raw"></a>
+
+## 📷 Modern formats (WebP, AVIF, HEIC, JPEG XL, camera RAW)
 
 RetroGleek opens these through the **decoders installed in Windows** (the Windows Imaging Component, reached through
 WPF's imaging classes in the .NET Framework). It bundles no decoder of its own and adds no native code: the decoders
@@ -328,14 +334,16 @@ the folder audit like any other picture.
 Big JPEG photos get faster thumbnails the same way: Windows' JPEG decoder can decode straight to a half, a quarter or
 an eighth of the full size, so a 50-megapixel photo no longer has to be decoded in full for a 200-pixel thumbnail.
 
-## Antivirus note
+<a id="antivirus-note"></a>
+
+## 🛡️ Antivirus note
 
 RetroGleek is an unsigned executable with no reputation yet, and it does the kinds of things file managers do
 (enumerates drives, copies, renames and deletes files). A few heuristic / machine-learning scanners may therefore flag
 a freshly built copy as suspicious. Because the program is a few readable source files, the safest approach is to read
 the source and build it yourself with `build.bat`.
 
-## Project layout
+## 📁 Project layout
 
 | File | Purpose |
 |---|---|
@@ -366,14 +374,14 @@ the source and build it yourself with `build.bat`.
 | `images/` | The pictures in this README (not needed to build) |
 | `tools/downgrade_recoil.py` | Regenerates `RECOIL.cs` from a RECOIL checkout (needs the `fut` translator) |
 
-## License
+## ⚖️ License
 
 RetroGleek is Copyright (c) 2026 Mark Billson and released under the [MIT License](LICENSE).
 
 The bundled `RECOIL.cs` is a separate work by Piotr Fusik under its own MIT License; see
 `THIRD-PARTY-NOTICES.txt`. Keep both notices when you redistribute RetroGleek.
 
-## Credits
+## 🙏 Credits
 
 Retro-computer picture decoding by **[RECOIL](https://github.com/pfusik/recoil)** by Piotr Fusik, used under the MIT
 License. See `THIRD-PARTY-NOTICES.txt`.
