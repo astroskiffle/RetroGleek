@@ -55,7 +55,9 @@ sealed class Canvas : Control
     public bool Filmstrip { get { return strip; } set { strip = value; if (HasImage) { Refit(); Clamp(); } Invalidate(); } }
     bool StripShown { get { return strip && !slideshow && files.Count > 1; } }
     int StripH { get { return StripShown ? Util.S(84) : 0; } }
-    int ViewH { get { return Math.Max(1, ClientSize.Height - StripH); } }      // the height the picture is shown in
+    int ViewH { get { return !exportSize.IsEmpty ? exportSize.Height : Math.Max(1, ClientSize.Height - StripH); } }   // the height the picture is shown in
+    int ViewW { get { return !exportSize.IsEmpty ? exportSize.Width : ClientSize.Width; } }
+    Size exportSize = Size.Empty;          // RenderAsShown: the picture is drawn into a bitmap of this size, not the window
     Point mousePt;
     int lhx = -2, lhy = -2;                // last pixel reported under the pointer
     string flash;
@@ -213,6 +215,126 @@ sealed class Canvas : Control
         finally { applyingView = false; }
     }
 
+    // ---- retro preview (the right side of Shift+O on a modern picture): every picture is shown converted in memory
+    // for an 8-bit computer (RetroConvert.Preview) and decoded back by RECOIL, so it is a retro picture to the viewer:
+    // True TV aspect, scanlines and the other screen effects, and automatic effects, work on it as on a real file.
+    // Nothing is written. Changing the choice converts the picture again.
+    RetroSim sim;
+    int simGen;                                            // pictures decoded for an older choice are thrown away
+    public RetroSim Simulation
+    {
+        get { return sim; }
+        set
+        {
+            sim = value == null ? null : value.Copy();
+            simGen++;
+            StopAnim();
+            if (cur != null && !cache.ContainsValue(cur)) cur.Dispose();
+            foreach (Pic p in cache.Values) p.Dispose();
+            cache.Clear();
+            pending.Clear();
+            cur = null; notice = null;
+            DropSharp(); DropFx(); DropComposite(); DropGlow();
+            if (idx >= 0 && idx < files.Count) GoTo(idx);
+            Invalidate();
+        }
+    }
+
+    // retro preview: how many lines of the converted picture (as RECOIL shows it) one pixel of the original became;
+    // 0 while there is none. The other side shows the original at the right side's zoom times this, so both match.
+    public double SimScale { get { return HasImage && cur.SimScale > 0 ? cur.SimScale : 0; } }
+
+    // ---- retro preview, "Fill the screen": a frame on the original (left) side showing what the computer's screen
+    // shows. Dragging on the picture moves the frame instead of panning; CropDragged reports where it is while you
+    // drag, CropDropped when you let go. In pixels of the upright picture (RW x RH: the preview turns and flips nothing).
+    RectangleF crop = RectangleF.Empty;
+    bool cropDrag;
+    PointF cropGrab;                                       // where in the frame the pointer took hold of it
+    public RectangleF CropFrame { get { return crop; } set { if (value == crop) return; crop = value; Invalidate(); } }
+    public event Action<RectangleF> CropDragged, CropDropped;
+    public bool UprightSize(out double w, out double h) { w = RW; h = RH; return HasImage; }
+
+    // the upright picture's pixel position under a window point (no turn or flip in the preview)
+    PointF UprightAt(Point s)
+    {
+        double x0 = ClientSize.Width / 2.0 + px - RW * zoom / 2, y0 = ViewH / 2.0 + py - RH * zoom / 2;
+        return new PointF((float)((s.X - x0) / zoom), (float)((s.Y - y0) / zoom));
+    }
+
+    void DrawCropFrame(Graphics g)
+    {
+        double x0 = ClientSize.Width / 2.0 + px - RW * zoom / 2, y0 = ViewH / 2.0 + py - RH * zoom / 2;
+        var pic = new RectangleF((float)x0, (float)y0, (float)(RW * zoom), (float)(RH * zoom));
+        var fr = new RectangleF((float)(x0 + crop.X * zoom), (float)(y0 + crop.Y * zoom), (float)(crop.Width * zoom), (float)(crop.Height * zoom));
+        g.SmoothingMode = SmoothingMode.None;
+        using (var shade = new SolidBrush(Color.FromArgb(150, 0, 0, 0)))
+        using (var outside = new Region(pic))
+        {
+            outside.Exclude(fr);
+            g.FillRegion(shade, outside);                  // what the screen leaves out is dimmed
+        }
+        using (var dark = new Pen(Color.Black, Math.Max(3f, Util.S(3))))
+        using (var light = new Pen(cropDrag ? Color.FromArgb(255, 210, 80) : Color.White, Math.Max(1f, Util.S(1))))
+        {
+            g.DrawRectangle(dark, fr.X, fr.Y, fr.Width, fr.Height);
+            g.DrawRectangle(light, fr.X, fr.Y, fr.Width, fr.Height);
+        }
+    }
+
+    // The whole picture as it is shown, screen effects included (True TV aspect, signal, scanlines, mask, glow and
+    // curvature, as they are set now), drawn at a size of its own rather than the window's: each of the computer's
+    // original lines becomes linesScale pixels high. No info bar, grid or frame. For the retro preview's Save (a PNG to
+    // share); null if there is no picture. Throws if the effects could not be drawn (not enough memory).
+    public Bitmap RenderAsShown(int linesScale)
+    {
+        if (!HasImage) return null;
+        double sz = zoom, sx = px, sy = py;
+        int sf = fitMode, srot = rot;
+        bool sfast = fast;
+        try
+        {
+            double lines = cur.Geom != null && cur.Geom.OrigH > 0 ? cur.Geom.OrigH : cur.H;
+            zoom = Math.Max(1, linesScale) * lines / cur.H;          // RECOIL may already show each line more than once
+            px = py = 0; fitMode = 0; fast = false;
+            int w = Math.Max(1, (int)Math.Round(RW * zoom)), h = Math.Max(1, (int)Math.Round(RH * zoom));
+            exportSize = new Size(w, h);
+            DropFx(); DropSharp();
+            var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
+            try
+            {
+                bool sharp = pixMode == 3 || (pixMode == 0 && cur.Note != null);
+                bool crisp = pixMode == 1 || sharp;
+                bool exact = Math.Abs(zoom - 1) < 1e-6 || (pixMode != 2 && zoom >= 3) || (zoom > 1 && crisp);
+                bool scan = ScanShown, mask = MaskShown, glow = GlowShown, curve = CurveShown;
+                using (Graphics g = Graphics.FromImage(bmp))
+                {
+                    g.Clear(Bg);
+                    if (scan || mask || glow || curve)
+                    {
+                        Rectangle r = PicScreenRect();
+                        Bitmap fx = EffectFrame(r, sharp, exact, scan, mask, glow, curve);
+                        if (fx == null) throw new OutOfMemoryException();
+                        g.CompositingMode = CompositingMode.SourceCopy;
+                        g.InterpolationMode = InterpolationMode.NearestNeighbor;
+                        g.PixelOffsetMode = PixelOffsetMode.None;
+                        g.DrawImage(fx, r, 0, 0, r.Width, r.Height, GraphicsUnit.Pixel);
+                    }
+                    else { PicTransform(g); DrawPic(g, sharp, exact); }
+                }
+                return bmp;
+            }
+            catch (Exception) { bmp.Dispose(); throw; }
+        }
+        catch (OutOfMemoryException) { throw new InvalidOperationException("There is not enough memory to draw the picture with its screen effects."); }
+        finally
+        {
+            exportSize = Size.Empty;
+            zoom = sz; px = sx; py = sy; fitMode = sf; rot = srot; fast = sfast;
+            DropFx(); DropSharp();
+            Invalidate();
+        }
+    }
+
     // forgets the picture(s) and frees their memory (when a comparison ends)
     public void Release()
     {
@@ -252,6 +374,24 @@ sealed class Canvas : Control
     readonly WinTimer animTimer = new WinTimer();
     int frame, frameCount;
     int[] frameDelays;                     // milliseconds per frame
+    bool waitingFrame;                     // retro preview: playing, waiting for the next frame to be converted
+    bool followFrames;                     // the frame shown is set from outside (ShowFrameOf), never by the own clock
+
+    // Retro preview of an animation: the left side follows the right side's frames, so both always show the same one.
+    // FrameShown reports each frame shown (also frame 0 when an animation starts).
+    public event Action<int> FrameShown;
+    public bool FollowFrames { get { return followFrames; } set { followFrames = value; if (value) animTimer.Stop(); else ScheduleFrame(); } }
+    public void ShowFrameOf(int f) { if (AnimActive && f >= 0) ShowFrame(f % frameCount); }
+    // the frame shown (0 for a still picture), and the colours an animation's preview keeps for every frame (or null)
+    public int SimFrame { get { return AnimActive ? frame : 0; } }
+    public void PauseAnimation()
+    {
+        if (!AnimActive || animPaused) return;
+        animPaused = true; waitingFrame = false; animTimer.Stop();
+        Flash("Animation paused at frame " + (frame + 1) + "   (P plays it again)");
+    }
+    public int SimFrameCount { get { return AnimActive ? frameCount : 1; } }
+    public int[] SimLock { get { return cur == null ? null : cur.SimLock; } }
     bool animPaused;
     bool flipX, flipY;                     // H / V: mirror the current picture (reset for the next one)
     bool checker;                          // B: checkerboard behind transparent pictures (remembered in settings.ini)
@@ -343,7 +483,13 @@ sealed class Canvas : Control
         settle.Tick += delegate { settle.Stop(); fast = false; Invalidate(); };
         flashTimer.Tick += delegate { flashTimer.Stop(); flash = null; Invalidate(); };
         slideTimer.Tick += delegate { Step(1); };
-        animTimer.Tick += delegate { animTimer.Stop(); if (AnimActive) { ShowFrame(frame + 1); ScheduleFrame(); } };
+        animTimer.Tick += delegate
+        {
+            animTimer.Stop();
+            if (!AnimActive || followFrames) return;
+            if (!ShowFrame(frame + 1)) { waitingFrame = true; return; }   // retro preview: that frame isn't converted yet
+            ScheduleFrame();
+        };
     }
 
     // ---------------------------------------------------------------- public API
@@ -497,7 +643,16 @@ sealed class Canvas : Control
             stripStamps.Remove(want);
             have = false;
         }
-        if (have) Display(p); else Request(want);
+        if (have) Display(p);
+        else
+        {
+            if (sim != null)                               // retro preview: no older picture in the meantime
+            {
+                Clear();
+                notice = "Making the " + RetroConvert.PreviewShort[Math.Max(0, Math.Min(RetroConvert.PreviewShort.Length - 1, sim.Machine))] + " preview...";
+            }
+            Request(want);
+        }
         Prefetch();
     }
 
@@ -535,15 +690,18 @@ sealed class Canvas : Control
         if (cache.ContainsKey(path) || pending.Contains(path)) return;
         pending.Add(path);
         Control host = FindForm();
+        RetroSim s = sim;
+        int gen = simGen;
         ThreadPool.QueueUserWorkItem(delegate
         {
-            Pic p = Decode(path);
-            if (!Util.Post(host, delegate { Loaded(p); })) p.Dispose();
+            Pic p = s != null ? DecodeSim(path, s) : Decode(path);
+            if (!Util.Post(host, delegate { Loaded(p, gen); })) p.Dispose();
         });
     }
 
-    void Loaded(Pic p)
+    void Loaded(Pic p, int gen)
     {
+        if (gen != simGen) { p.Dispose(); return; }        // made for an earlier retro preview choice
         pending.Remove(p.FullPath);
         if (!IsNear(p.FullPath) || cache.ContainsKey(p.FullPath)) { p.Dispose(); return; }
         if (p.Stamp != FileStamp(p.FullPath))              // the file changed while it was being read: read it again
@@ -557,59 +715,65 @@ sealed class Canvas : Control
         if (string.Equals(p.FullPath, want, StringComparison.OrdinalIgnoreCase)) Display(p);
     }
 
-    void StopAnim() { animTimer.Stop(); frameCount = 0; animPaused = false; }
+    void StopAnim() { animTimer.Stop(); frameCount = 0; animPaused = false; waitingFrame = false; }
 
     bool AnimActive { get { return cur != null && cur.Anim && cur.Img != null && frameCount > 1; } }
 
     void StartAnim(Pic p)
     {
-        frame = 0; frameCount = 0; animPaused = false;
-        if (p.Frames != null)                              // animated WebP: frames already put together, delays in ms
-        {
-            frameCount = p.Frames.Count;
+        frame = 0; frameCount = 0; animPaused = false; waitingFrame = false;
+        if (p.Frames != null)                              // animated WebP, or the retro preview of an animation: frames
+        {                                                  // put together, delays in ms (the preview's frames still arriving)
+            frameCount = p.Delays.Length;
             frameDelays = (int[])p.Delays.Clone();
             p.Img = p.Frames[0];
-            if (frameCount > 1) ScheduleFrame();
-            return;
         }
-        try
+        else
         {
-            frameCount = p.Img.GetFrameCount(FrameDimension.Time);
-            frameDelays = new int[Math.Max(1, frameCount)];
-            byte[] d = null;
-            try { if (Array.IndexOf(p.Img.PropertyIdList, 0x5100) >= 0) d = p.Img.GetPropertyItem(0x5100).Value; } catch (Exception) { }
-            for (int i = 0; i < frameDelays.Length; i++)
+            try
             {
-                int cs = d != null && d.Length >= i * 4 + 4 ? BitConverter.ToInt32(d, i * 4) : 10;   // 1/100 s per frame
-                frameDelays[i] = cs < 2 ? 100 : Math.Min(cs * 10, 60000);                         // 0 or 1 means "fast": 100 ms, as browsers do
+                frameCount = p.Img.GetFrameCount(FrameDimension.Time);
+                frameDelays = Exporter.GifDelays(p.Img, frameCount);
+                p.Img.SelectActiveFrame(FrameDimension.Time, 0);
             }
-            p.Img.SelectActiveFrame(FrameDimension.Time, 0);
+            catch (Exception) { frameCount = 0; }
         }
-        catch (Exception) { frameCount = 0; }
-        if (frameCount > 1) ScheduleFrame();
+        if (frameCount > 1)
+        {
+            var h = FrameShown;
+            if (h != null) h(0);
+            ScheduleFrame();
+        }
     }
 
     void ScheduleFrame()
     {
         animTimer.Stop();
-        if (!AnimActive || animPaused || !Visible) return;
+        if (!AnimActive || animPaused || !Visible || followFrames) return;
         animTimer.Interval = Math.Max(10, frameDelays[Math.Min(frame, frameDelays.Length - 1)]);
         animTimer.Start();
     }
 
-    void ShowFrame(int f)
+    // false when that frame of a retro preview isn't converted yet (nothing changes)
+    bool ShowFrame(int f)
     {
-        if (!AnimActive) return;
-        frame = ((f % frameCount) + frameCount) % frameCount;
-        if (cur.Frames != null) { if (frame < cur.Frames.Count) cur.Img = cur.Frames[frame]; }   // animated WebP: show that frame
+        if (!AnimActive) return false;
+        int to = ((f % frameCount) + frameCount) % frameCount;
+        if (cur.Frames != null && to >= cur.Frames.Count) return false;
+        frame = to;
+        if (cur.Frames != null) cur.Img = cur.Frames[frame];          // animated WebP or retro preview: show that frame
         else try { cur.Img.SelectActiveFrame(FrameDimension.Time, frame); } catch (Exception) { }
         Invalidate();
+        var h = FrameShown;
+        if (h != null) h(frame);
+        return true;
     }
 
     void ToggleAnimPause()
     {
         if (!AnimActive) { Flash("This picture is not animated"); return; }   // animated GIF or WebP
         animPaused = !animPaused;
+        waitingFrame = false;
         if (animPaused) animTimer.Stop(); else ScheduleFrame();
         Flash(animPaused ? "Animation paused   (, and . step one frame)" : "Animation playing");
     }
@@ -619,7 +783,8 @@ sealed class Canvas : Control
         if (!AnimActive) return;
         animPaused = true;
         animTimer.Stop();
-        ShowFrame(frame + d);
+        waitingFrame = false;
+        if (!ShowFrame(frame + d)) Flash("Frame " + (((frame + d) % frameCount + frameCount) % frameCount + 1) + " is still being converted");
     }
 
     void Clear() { StopAnim(); cur = null; notice = null; DropSharp(); DropFx(); DropComposite(); DropGlow(); Invalidate(); }
@@ -634,7 +799,15 @@ sealed class Canvas : Control
         if (fitLock) fitMode = 2;                          // Fit-to-Screen on: fit the window (small pictures grow)
         else { fitMode = 0; zoom = 1; px = py = 0; }       // off: 100%, centred
         fast = false;
-        if (p.Anim && p.Img != null) StartAnim(p);
+        if (p.Anim && p.Img != null)
+        {
+            StartAnim(p);
+            if (p.Sim != null && p.Frames != null && p.Frames.Count < p.Delays.Length)
+            {
+                Flash("Converting the animation's " + p.Delays.Length + " frames: it plays as they are ready");
+                SimMore(p);
+            }
+        }
         ApplyAuto();                                       // automatic effects: chosen for this picture's computer
         Refit();
         Trim();
@@ -650,6 +823,146 @@ sealed class Canvas : Control
         foreach (KeyValuePair<string, Pic> kv in cache)
             if (kv.Value != cur && !IsNear(kv.Key)) drop.Add(kv.Key);
         foreach (string k in drop) { cache[k].Dispose(); cache.Remove(k); }
+    }
+
+    // retro preview, on worker threads: the picture converted in memory for s's computer, as RECOIL shows the result.
+    // An animated GIF or WebP: its first frame now, converted with the colours kept for every frame (PreviewLock, from
+    // up to 8 frames spread over the animation); the rest follow in the background once it is shown (SimMore).
+    const int SimSampleFrames = 8;
+    const long SimMaxBytes = 384L * 1024 * 1024;           // all the converted frames together; the rest are left out
+
+    static Pic DecodeSim(string path, RetroSim s)
+    {
+        var p = new Pic { FullPath = path, Stamp = FileStamp(path) };
+        AnimSource anim = null;
+        Bitmap first = null;
+        try
+        {
+            try { anim = AnimSource.Open(path); }
+            catch (Exception) { anim = null; }             // a damaged animation: the still decoder below says why
+            int[] lockPal = null;
+            if (anim != null)
+            {
+                var sample = new List<Bitmap>();
+                try
+                {
+                    int n = Math.Min(SimSampleFrames, anim.Count);
+                    for (int i = 0; i < n; i++) sample.Add(anim.Frame((int)((long)i * anim.Count / n)));
+                    lockPal = RetroConvert.PreviewLock(sample, s.Machine, s.Fill, s.CropX, s.CropY);
+                }
+                finally { foreach (Bitmap b in sample) b.Dispose(); }
+            }
+            double lines;
+            int screenH, bytes;
+            RetroGeom geom;
+            using (Bitmap src = anim != null ? anim.Frame(0) : Exporter.Decode(path, 0))   // upright, as the other side shows it
+                first = ConvertSimFrame(src, s, lockPal, out lines, out screenH, out bytes, out geom);
+            p.Img = first;
+            p.W = first.Width; p.H = first.Height; p.Bytes = bytes;
+            p.Note = first.Tag as string;
+            p.Geom = geom;
+            p.SimScale = lines * p.H / screenH;            // RECOIL may show each screen line more than once
+            if (anim != null)
+            {
+                long per = Math.Max(1L, (long)first.Width * first.Height * 4);
+                int total = (int)Math.Max(2, Math.Min(anim.Count, SimMaxBytes / per));
+                p.Frames = new List<Bitmap> { first };
+                p.Delays = new int[total];
+                Array.Copy(anim.Delays, p.Delays, Math.Min(total, anim.Delays.Length));
+                for (int i = 0; i < total; i++) if (p.Delays[i] <= 0) p.Delays[i] = 100;
+                p.Anim = true;
+                p.Sim = s.Copy();
+                p.SimLock = lockPal;
+            }
+        }
+        catch (Exception ex)
+        {
+            if (first != null) first.Dispose();
+            p.Img = null; p.Frames = null; p.Anim = false;
+            p.Err = ex is OutOfMemoryException ? "Too large to convert." : Util.Why(ex);
+        }
+        finally { if (anim != null) anim.Dispose(); }
+        return p;
+    }
+
+    // one picture (or frame) converted for s's computer and decoded by RECOIL; the platform name is in Tag
+    static Bitmap ConvertSimFrame(Bitmap src, RetroSim s, int[] lockPal, out double lines, out int screenH, out int bytes, out RetroGeom geom)
+    {
+        string ext;
+        byte[] data = RetroConvert.Preview(src, s.Machine, s.Fill, s.Dither, s.CropX, s.CropY, lockPal, out ext, out lines, out screenH);
+        string platform;
+        Bitmap b = Retro.LoadMemory("preview" + ext, data, out platform, out geom);
+        b.Tag = platform;
+        bytes = data.Length;
+        return b;
+    }
+
+    // Retro preview of an animation that is shown: its remaining frames, converted one by one on a worker thread and
+    // added as they are ready (playback waits for a frame that isn't there yet). Stops when the picture is let go of
+    // (another choice, or it is no longer near). A frame that can't be converted ends the animation there.
+    void SimMore(Pic p)
+    {
+        if (p.SimBusy || p.Dropped || p.Frames == null || p.Sim == null || p.Frames.Count >= p.Delays.Length) return;
+        p.SimBusy = true;
+        Control host = FindForm();
+        int from = p.Frames.Count, total = p.Delays.Length;
+        string path = p.FullPath;
+        RetroSim s = p.Sim;
+        int[] lockPal = p.SimLock;
+        ThreadPool.QueueUserWorkItem(delegate
+        {
+            int done = from;
+            try
+            {
+                using (AnimSource anim = AnimSource.Open(path))
+                {
+                    for (int i = from; anim != null && i < Math.Min(total, anim.Count) && !p.Dropped; i++)
+                    {
+                        Bitmap b;
+                        double lines; int sh, bytes; RetroGeom g;
+                        using (Bitmap src = anim.Frame(i)) b = ConvertSimFrame(src, s, lockPal, out lines, out sh, out bytes, out g);
+                        if (!Util.Post(host, delegate { SimFrameReady(p, b); })) { b.Dispose(); return; }
+                        done = i + 1;
+                    }
+                }
+            }
+            catch (Exception) { }                         // ends the animation at the last good frame
+            int end = done;
+            Util.Post(host, delegate { SimFramesDone(p, end); });
+        });
+    }
+
+    // on the UI thread: one more converted frame
+    void SimFrameReady(Pic p, Bitmap b)
+    {
+        if (p.Dropped || p.Frames == null) { b.Dispose(); return; }
+        p.Frames.Add(b);
+        if (p != cur) return;
+        if (waitingFrame && AnimActive)
+        {
+            waitingFrame = false;
+            if (ShowFrame(frame + 1)) ScheduleFrame(); else waitingFrame = true;
+        }
+        else if (showInfo) Invalidate();                   // the info bar counts the converted frames
+        if (p.Frames.Count == frameCount) Flash("All " + frameCount + " frames converted");
+    }
+
+    // on the UI thread: the worker stopped; fewer frames than planned means one could not be converted
+    void SimFramesDone(Pic p, int end)
+    {
+        p.SimBusy = false;
+        if (p.Dropped || p.Frames == null || p.Frames.Count >= p.Delays.Length) return;
+        int n = Math.Max(1, p.Frames.Count);
+        if (n < 2) { p.Anim = false; if (p == cur) { StopAnim(); Invalidate(); } return; }
+        var d = new int[n];
+        Array.Copy(p.Delays, d, n);
+        p.Delays = d;
+        if (p != cur) return;
+        frameCount = n;
+        frameDelays = (int[])d.Clone();
+        if (frame >= n) ShowFrame(0);
+        if (waitingFrame) { waitingFrame = false; if (ShowFrame(frame + 1)) ScheduleFrame(); }
+        Flash("Only the first " + n + " frames could be converted");
     }
 
     // runs on worker threads
@@ -832,6 +1145,7 @@ sealed class Canvas : Control
             bool hov = mouseIn && !dragging && PixelAt(mousePt, out hx, out hy);
             if (zoom >= 8 && (showGrid || hov)) DrawPixelTools(g, hov, hx, hy);
             g.ResetTransform();
+            if (!crop.IsEmpty) DrawCropFrame(g);
             if (loupe && mouseIn && !dragging) DrawLoupe(g, hov, hx, hy);
             if (showInfo) DrawInfo(g, hov, hx, hy);
         }
@@ -1200,7 +1514,7 @@ sealed class Canvas : Control
     // the picture's transform: pan, rotate, zoom, True TV aspect, mirror (picture pixels -> window pixels)
     void PicTransform(Graphics g)
     {
-        g.TranslateTransform((float)(ClientSize.Width / 2.0 + px), (float)(ViewH / 2.0 + py));
+        g.TranslateTransform((float)(ViewW / 2.0 + px), (float)(ViewH / 2.0 + py));
         g.RotateTransform(rot * 90f);
         g.ScaleTransform((float)zoom, (float)zoom);
         double ax = Ax;
@@ -1241,9 +1555,9 @@ sealed class Canvas : Control
     Rectangle PicScreenRect()
     {
         double w = RW * zoom, h = RH * zoom;
-        double x = ClientSize.Width / 2.0 + px - w / 2, y = ViewH / 2.0 + py - h / 2;
+        double x = ViewW / 2.0 + px - w / 2, y = ViewH / 2.0 + py - h / 2;
         int x0 = (int)Math.Floor(x), y0 = (int)Math.Floor(y), x1 = (int)Math.Ceiling(x + w), y1 = (int)Math.Ceiling(y + h);
-        return Rectangle.Intersect(Rectangle.FromLTRB(x0, y0, x1, y1), new Rectangle(0, 0, ClientSize.Width, ViewH));
+        return Rectangle.Intersect(Rectangle.FromLTRB(x0, y0, x1, y1), new Rectangle(0, 0, ViewW, ViewH));
     }
 
     // ---- CRT effects (K scanlines, M phosphor mask): display only, retro pictures, upright or upside down.
@@ -1268,7 +1582,7 @@ sealed class Canvas : Control
     Bitmap EffectFrame(Rectangle r, bool sharp, bool exact, bool scan, bool mask, bool glow, bool curve)
     {
         var inv = System.Globalization.CultureInfo.InvariantCulture;
-        string key = zoom.ToString("R", inv) + "|" + px.ToString("R", inv) + "|" + py.ToString("R", inv) + "|" + ClientSize.Width + "x" + ViewH
+        string key = zoom.ToString("R", inv) + "|" + px.ToString("R", inv) + "|" + py.ToString("R", inv) + "|" + ViewW + "x" + ViewH
                    + "|" + r.X + "," + r.Y + "," + r.Width + "," + r.Height + "|" + rot + (flipX ? "h" : "") + (flipY ? "v" : "") + "|" + Ax.ToString("R", inv)
                    + "|" + (scan ? scanMode : 0) + "|" + (mask ? maskMode : 0) + "|" + (sharp ? "s" : "") + (exact ? "e" : "") + (fast ? "f" : "")
                    + (checker ? "c" : "") + "|" + (SignalApplies ? signalMode : 0) + "|" + (glow ? glowMode : 0) + "|" + (curve ? curveMode : 0) + "|" + (AnimActive ? frame : 0);
@@ -1461,7 +1775,8 @@ sealed class Canvas : Control
                  + (cur.Note != null ? "    " + cur.Note : "") + "    " + (int)Math.Round(zoom * 100) + "%" + (fitLock ? " (Fit)" : "")
                  + (flipX ? "    Flipped H" : "") + (flipY ? "    Flipped V" : "") + "    " + (idx + 1) + " / " + files.Count
                  + (slideshow ? "    Slideshow " + SlideSecs[slideIdx] + " s" : "")
-                 + (AnimActive ? "    Frame " + (frame + 1) + " / " + frameCount + (animPaused ? " (paused)" : "") : "")
+                 + (AnimActive ? "    Frame " + (frame + 1) + " / " + frameCount + (animPaused ? " (paused)" : "")
+                    + (cur.Frames != null && cur.Frames.Count < frameCount ? " (" + cur.Frames.Count + " converted)" : "") : "")
                  + (cur.Geom != null && cur.Geom.OrigW > 0 && (cur.Geom.OrigW != cur.W || cur.Geom.OrigH != cur.H) ? "    original " + cur.Geom.OrigW + " x " + cur.Geom.OrigH : "")
                  + (Ax != 1.0 ? "    TV aspect" : "")
                  + (ScanApplies ? (LineHeight * zoom >= 3 ? "    Scanlines " + ScanNames[scanMode] : "    Scanlines (from 300%)")
@@ -1570,12 +1885,33 @@ sealed class Canvas : Control
             if (e.Button == MouseButtons.Left && hit >= 0 && hit != idx) GoTo(hit);
             return;
         }
+        if (e.Button == MouseButtons.Left && HasImage && !crop.IsEmpty)     // retro preview: move the crop frame
+        {
+            PointF at = UprightAt(e.Location);
+            cropDrag = true;
+            cropGrab = crop.Contains(at) ? new PointF(at.X - crop.X, at.Y - crop.Y) : new PointF(crop.Width / 2, crop.Height / 2);
+            Cursor = Cursors.SizeAll;
+            MoveCrop(at);
+            return;
+        }
         if (e.Button == MouseButtons.Left && HasImage) { dragging = true; last = e.Location; Cursor = Cursors.SizeAll; }
+    }
+
+    void MoveCrop(PointF at)
+    {
+        float x = Math.Max(0, Math.Min((float)RW - crop.Width, at.X - cropGrab.X));
+        float y = Math.Max(0, Math.Min((float)RH - crop.Height, at.Y - cropGrab.Y));
+        if (x == crop.X && y == crop.Y) return;
+        crop = new RectangleF(x, y, crop.Width, crop.Height);
+        Invalidate();
+        var h = CropDragged;
+        if (h != null) h(crop);
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        if (cropDrag) { MoveCrop(UprightAt(e.Location)); return; }
         if (!dragging) { UpdateHover(e.Location); if (loupe) Invalidate(); return; }
         px += e.X - last.X; py += e.Y - last.Y;
         last = e.Location;
@@ -1823,12 +2159,19 @@ sealed class Canvas : Control
     {
         base.OnMouseUp(e);
         dragging = false; Cursor = Cursors.Default;
+        if (cropDrag)
+        {
+            cropDrag = false;
+            Invalidate();
+            var h = CropDropped;
+            if (h != null) h(crop);
+        }
     }
 
     protected override void OnMouseDoubleClick(MouseEventArgs e)
     {
         base.OnMouseDoubleClick(e);
-        if (!HasImage || (StripShown && e.Y >= ClientSize.Height - StripH)) return;
+        if (!HasImage || (StripShown && e.Y >= ClientSize.Height - StripH) || !crop.IsEmpty) return;   // the crop frame: no zoom
         if (Math.Abs(zoom - 1) < 1e-6) SetFit(2); else ZoomTo(1, e.X, e.Y);
     }
 }

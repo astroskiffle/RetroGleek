@@ -1618,6 +1618,15 @@ partial class MainForm
             "  Shift+O                 before / after: the picture as decoded beside it with its screen effects",
             "                          (retro; also from the browser with one picture selected; effect keys and",
             "                          presets change the right side; Shift+O or Esc closes)",
+            "  Shift+O on a photo      retro preview: the picture beside it as it might look on an 8-bit computer",
+            "                          (ZX Spectrum, C64, Amstrad CPC, MSX), with the screen effects; display only.",
+            "                          Q / Shift+Q computer, D / Shift+D dithering, Shift+F whole picture or fill the screen",
+            "                          (also the bar above the right picture and the Effects menu); with Fill the screen,",
+            "                          drag the frame on the left picture to choose the part shown;",
+            "                          an animated GIF or WebP plays on both sides (P pauses, , and . step)",
+            "  Ctrl+S (retro preview)  save the computer's own file (.scr, .koa, .dd, .sc2), as previewed and without",
+            "                          screen effects, plus a PNG of the screen with its effects beside it, to share",
+            "                          (an animation: the frame shown; it pauses there)",
             "  A                       automatic effects: the usual screen of each picture's computer (A again: your own)",
             "  Ctrl+1 .. Ctrl+9        use a saved screen effects preset (Effects > Save these effects as a preset)",
             "  T                       True TV aspect: pixels shaped as on the original PAL / NTSC screen (retro)",
@@ -1830,7 +1839,7 @@ partial class MainForm
             return;
         }
         canvas.UseEffects(p);
-        if (beforeAfter) { cmpB.UseEffects(p); BaMatch(); }
+        if (beforeAfter) { simFxTouched = true; cmpB.UseEffects(p); BaMatch(); }
         else if (comparing) { cmpA.UseEffects(p); cmpB.UseEffects(p); }
         foreach (Canvas c in EffectTargets()) c.ShowMessage("Preset " + (i + 1) + ": " + p.Name + "  (" + p.Describe() + ")");
         if (!viewing && !comparing) status.Text = "  Screen effects preset " + (i + 1) + ": " + p.Name + "  (" + p.Describe() + ")";
@@ -2089,8 +2098,39 @@ partial class MainForm
         ToolStripMenuItem effects = MenuTop("Effe&cts");
         MenuEntry(effects, "&Show screen effects", "O", delegate { canvas.EffectsOff = !canvas.EffectsOff; }, null, delegate { return !canvas.EffectsOff; });
         MenuEntry(effects, "&Before / after: plain and with effects, side by side", "Shift+O",
-                  delegate { if (beforeAfter) EndBeforeAfter(); else StartBeforeAfter(); }, delegate { return beforeAfter || CanBeforeAfter(); }, delegate { return beforeAfter; });
-        LastEntry.Text = delegate { return beforeAfter ? "Close &before / after" : "&Before / after: plain and with effects, side by side"; };
+                  delegate { if (beforeAfter) EndBeforeAfter(); else StartBeforeAfter(); },
+                  delegate { return (beforeAfter && !baSim) || CanBeforeAfter(); }, delegate { return beforeAfter && !baSim; });
+        LastEntry.Text = delegate { return beforeAfter && !baSim ? "Close &before / after" : "&Before / after: plain and with effects, side by side"; };
+        LastEntry.InCompare = true;
+        // retro preview: a photo or other modern picture as it might look on an 8-bit computer (display only)
+        MenuEntry(effects, "&Retro preview: this picture on an 8-bit computer", "Shift+O",
+                  delegate { if (beforeAfter) EndBeforeAfter(); else StartBeforeAfter(); },
+                  delegate { return (beforeAfter && baSim) || CanRetroPreview(); }, delegate { return beforeAfter && baSim; });
+        LastEntry.Text = delegate { return beforeAfter && baSim ? "Close the &retro preview" : "&Retro preview: this picture on an 8-bit computer"; };
+        LastEntry.InCompare = true;
+        ToolStripMenuItem simComp = MenuSub(effects, "Retro preview c&omputer", null);
+        menuStates[menuStates.Count - 1].InCompare = true;
+        for (int ci = 0; ci < RetroConvert.PreviewNames.Length; ci++)
+        {
+            int m = ci;
+            MenuEntry(simComp, "&" + (m + 1) + "  " + RetroConvert.PreviewNames[m], m == 0 ? "Q cycles" : "",
+                      delegate { SimSet(m, simOpts.Dither, simOpts.Fill); }, null, delegate { return simOpts.Machine == m; });
+            LastEntry.InCompare = true;
+        }
+        ToolStripMenuItem simDith = MenuSub(effects, "Retro preview &dithering", null);
+        menuStates[menuStates.Count - 1].InCompare = true;
+        for (int di = 0; di < RetroConvert.DitherNames.Length; di++)
+        {
+            int d = di;
+            MenuEntry(simDith, "&" + (d + 1) + "  " + RetroConvert.DitherNames[d], d == 0 ? "D cycles" : "",
+                      delegate { SimSet(simOpts.Machine, d, simOpts.Fill); }, null, delegate { return simOpts.Dither == d; });
+            LastEntry.InCompare = true;
+        }
+        MenuEntry(effects, "Retro preview: &fill the screen (crop)", "Shift+F", delegate { SimSet(simOpts.Machine, simOpts.Dither, !simOpts.Fill); },
+                  null, delegate { return simOpts.Fill; });
+        LastEntry.InCompare = true;
+        MenuEntry(effects, "Retro preview: sa&ve the computer's file and a PNG of the screen...", "Ctrl+S", delegate { SimSave(); },
+                  delegate { return beforeAfter && baSim && !simSaving; }, null);
         LastEntry.InCompare = true;
         MenuEntry(effects, "&Automatic: the usual screen of each picture's computer", "A", delegate { canvas.ToggleAuto(); }, null, delegate { return canvas.AutoEffects; });
         LastEntry.Text = delegate
@@ -2312,7 +2352,7 @@ partial class MainForm
         int preset = PresetKey(keyData);
         if (preset > 0) { ApplyPreset(preset - 1); return true; }
         int markKind, markValue = MarkKey(keyData, out markKind);
-        if (k == Keys.O && shift && !ctrl && !alt && !typing && !comparing && (viewing || CanBeforeAfter())) { StartBeforeAfter(); return true; }   // before / after
+        if (k == Keys.O && shift && !ctrl && !alt && !typing && !comparing && (!viewing || CanBeforeAfter() || CanRetroPreview())) { StartBeforeAfter(); return true; }   // before / after, or the retro preview
         if (comparing) return markKind != 0 || CompareKey(keyData);       // marks are given in the browser or the viewer
         if (ctrl && shift && k == Keys.C && !viewing) { StartCompare(); return true; }
         if (ctrl && shift && k == Keys.S) { DoExportFrames(); return true; }

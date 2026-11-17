@@ -74,7 +74,7 @@ static class Exporter
 
     // Exact 1:1 copy into a straight-alpha 32-bit bitmap. Reads the raw pixel data (no drawing, so no
     // blending or colour rounding can creep in, even for semi-transparent pixels).
-    static Bitmap ToArgb(Image img)
+    internal static Bitmap ToArgb(Image img)
     {
         Bitmap src = img as Bitmap;
         if (src == null) throw new InvalidDataException("This picture type can't be exported.");
@@ -104,6 +104,21 @@ static class Exporter
         }
         finally { b.UnlockBits(bd); }
         return px;
+    }
+
+    // An animated GIF's frame times in milliseconds, as browsers show them: from the GIF's delay property (1/100 s
+    // per frame); 0 or 1 means "as fast as possible", shown as 100 ms
+    public static int[] GifDelays(Image img, int count)
+    {
+        var delays = new int[Math.Max(1, count)];
+        byte[] d = null;
+        try { if (Array.IndexOf(img.PropertyIdList, 0x5100) >= 0) d = img.GetPropertyItem(0x5100).Value; } catch (Exception) { }
+        for (int i = 0; i < delays.Length; i++)
+        {
+            int cs = d != null && d.Length >= i * 4 + 4 ? BitConverter.ToInt32(d, i * 4) : 10;
+            delays[i] = cs < 2 ? 100 : Math.Min(cs * 10, 60000);
+        }
+        return delays;
     }
 
     // Every frame of an animated GIF or WebP / every page of a multi-page TIFF, each as its own verified lossless PNG
@@ -374,8 +389,26 @@ static class Retro
             }
         }
         fileBytes = bytes.Length;
+        return FromRecoil(new Reader(path), path, bytes, out platform, out frameCount, out geom);
+    }
 
-        var r = new Reader(path);
+    // A retro file held in memory (the retro preview's conversions): RECOIL reads no companion files for it.
+    sealed class MemReader : Recoil.RECOIL
+    {
+        protected override int ReadFile(string filename, byte[] content, int contentLength) { return -1; }
+    }
+
+    // name only tells RECOIL the format (its extension); nothing is read from disk
+    public static Bitmap LoadMemory(string name, byte[] bytes, out string platform, out RetroGeom geom)
+    {
+        int frames;
+        return FromRecoil(new MemReader(), name, bytes, out platform, out frames, out geom);
+    }
+
+    static Bitmap FromRecoil(Recoil.RECOIL r, string path, byte[] bytes, out string platform, out int frameCount, out RetroGeom geom)
+    {
+        geom = new RetroGeom();
+        frameCount = 1;
         bool ok;
         try { ok = r.Decode(path, bytes, bytes.Length); }
         catch (Exception) { ok = false; }                // malformed input must never take the viewer down
@@ -430,6 +463,73 @@ static class Retro
 
 // ====================================================================== viewer data
 
+// The frames of an animated GIF or WebP, one at a time, each as a new upright 32-bit picture (a GIF's EXIF turn is
+// applied, as the viewer applies it), with each frame's time on screen in milliseconds. Frames come as the viewer
+// shows them: GDI+ and WebpAnim put each one together with the frames before it. Open gives null for anything else
+// (stills, TIFF pages, retro pictures, a WebP too big to animate). The retro preview converts animations from it.
+// Any thread, one thread at a time.
+sealed class AnimSource : IDisposable
+{
+    List<Bitmap> webp;           // WebP: every frame, already put together
+    Image gif;
+    MemoryStream ms;
+    int turns;
+    public int Count;
+    public int[] Delays;
+
+    public static AnimSource Open(string path)
+    {
+        if ((File.GetAttributes(path) & Util.CloudMask) != 0)
+            throw new IOException("This file is a cloud placeholder that isn't stored on this PC.");
+        if (WebpAnim.IsWebp(path))
+        {
+            List<Bitmap> frames; int[] delays; long size;
+            if (!WebpAnim.TryLoad(path, out frames, out delays, out size)) return null;
+            if (frames.Count < 2) { foreach (Bitmap b in frames) b.Dispose(); return null; }
+            return new AnimSource { webp = frames, Delays = delays, Count = frames.Count };
+        }
+        if (!Util.IsNative(path)) return null;
+        var m = new MemoryStream(Util.ReadShared(path), false);
+        Image img = null;
+        try
+        {
+            img = Image.FromStream(m, false, false);
+            bool timed = false;
+            foreach (Guid g in img.FrameDimensionsList) if (g == FrameDimension.Time.Guid) timed = true;
+            int n = timed ? img.GetFrameCount(FrameDimension.Time) : 1;
+            if (n < 2) { img.Dispose(); m.Dispose(); return null; }
+            return new AnimSource { gif = img, ms = m, Count = n, Delays = Exporter.GifDelays(img, n), turns = Util.ReadRotation(img) & 3 };
+        }
+        catch (Exception)
+        {
+            if (img != null) img.Dispose();
+            m.Dispose();
+            throw;
+        }
+    }
+
+    // frame i (0 .. Count - 1), a new bitmap the caller disposes
+    public Bitmap Frame(int i)
+    {
+        if (webp != null)
+        {
+            Bitmap w = webp[i];
+            return w.Clone(new Rectangle(0, 0, w.Width, w.Height), PixelFormat.Format32bppArgb);
+        }
+        gif.SelectActiveFrame(FrameDimension.Time, i);
+        Bitmap b = Exporter.ToArgb(gif);
+        if (turns != 0) b.RotateFlip(turns == 1 ? RotateFlipType.Rotate90FlipNone : turns == 2 ? RotateFlipType.Rotate180FlipNone : RotateFlipType.Rotate270FlipNone);
+        return b;
+    }
+
+    public void Dispose()
+    {
+        if (webp != null) { foreach (Bitmap b in webp) b.Dispose(); webp = null; }
+        if (gif != null) { gif.Dispose(); gif = null; }
+        if (ms != null) { ms.Dispose(); ms = null; }
+    }
+}
+
 sealed class Pic : IDisposable
 {
     public string FullPath;
@@ -442,6 +542,11 @@ sealed class Pic : IDisposable
     public int[] Delays;         // animated WebP: each frame's time on screen, in milliseconds
     public string Err;
     public string Note;          // e.g. the retro platform name
+    public double SimScale;      // retro preview only: lines of the converted picture per pixel of the original (0 otherwise)
+    public RetroSim Sim;         // retro preview of an animation: the choices its frames are converted with
+    public int[] SimLock;        //   the colours kept for every frame (RetroConvert.PreviewLock), or null
+    public bool SimBusy;         //   its remaining frames are being converted (Frames grows until it has Delays.Length)
+    public volatile bool Dropped;   // disposed: work still running for it stops
     public RetroGeom Geom;       // retro pictures only: original resolution and pixel density
     public List<string> Exif;    // readable EXIF lines (camera, exposure ...), or null
     public int FileStars;        // star rating stored in the file (Windows, Lightroom ...), 0 = none
@@ -450,6 +555,7 @@ sealed class Pic : IDisposable
 
     public void Dispose()
     {
+        Dropped = true;
         if (Frames != null) { foreach (Bitmap b in Frames) b.Dispose(); Frames = null; }   // Img is one of them
         else if (Img != null) Img.Dispose();
         if (Ms != null) Ms.Dispose();

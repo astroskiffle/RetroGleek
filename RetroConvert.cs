@@ -14,6 +14,8 @@
 //   the same brightness (8 colours, normal or bright; black is the same in both). Per block, the pair of colours that
 //   best covers the block's pixels (including what dithering between them can show) is chosen; then each pixel is set
 //   to ink or paper: nearest colour, an 8 x 8 ordered (Bayer) pattern, or error diffusion (Floyd-Steinberg, serpentine).
+//   Error diffusion stays inside each colour block (the C64's cells too, and the MSX's 8-pixel columns): the error left
+//   at a block's edge is dropped rather than passed to a block with other colours, so colour edges stay clean.
 //   C64 Koala Painter (.koa, 10003 bytes): 160 x 200 multicolour, pixels twice as wide as tall; 16 fixed colours; each
 //   4 x 8 cell shows the screen's background colour plus 3 of its own. The background is the colour nearest to the
 //   most pixels; per cell the 3 colours that best cover it (again including the mixes dithering can show) are chosen.
@@ -43,6 +45,17 @@ sealed class ConvertOptions
     public bool Fill;            // false: the whole picture with black borders; true: cropped to fill the screen
     public int Dither;           // 0 none, 1 ordered pattern, 2 error diffusion
     public string DestDir;       // where the new files go
+    public int[] Lock;           // retro preview of an animation: colours kept for every frame (PreviewLock), else null
+}
+
+// The retro preview's choices (Shift+O on a modern picture): which computer, which dithering, whole picture or filled
+sealed class RetroSim
+{
+    public int Machine;          // index into RetroConvert.PreviewFormats
+    public int Dither;           // 0 none, 1 ordered pattern, 2 error diffusion
+    public bool Fill;            // false: the whole picture with black borders; true: cropped to fill the screen
+    public double CropX = 0.5, CropY = 0.5;   // Fill: where the crop sits, 0 = left / top edge, 1 = right / bottom edge
+    public RetroSim Copy() { return new RetroSim { Machine = Machine, Dither = Dither, Fill = Fill, CropX = CropX, CropY = CropY }; }
 }
 
 static class RetroConvert
@@ -235,12 +248,8 @@ static class RetroConvert
                     on = br2 * br2 * WR + bg2 * bg2 * WG + bb2 * bb2 * WB < ar * ar * WR + ag * ag * WG + ab * ab * WB;
                     if (dither == 2)
                     {
-                        int c = on ? b : a, dx = rev ? -1 : 1;
-                        float er = vr - pr[c], eg = vg - pg[c], eb = vb - pb[c];
-                        Spread(work, W, H, x + dx, y, er, eg, eb, 7f / 16);
-                        Spread(work, W, H, x - dx, y + 1, er, eg, eb, 3f / 16);
-                        Spread(work, W, H, x, y + 1, er, eg, eb, 5f / 16);
-                        Spread(work, W, H, x + dx, y + 1, er, eg, eb, 1f / 16);
+                        int c = on ? b : a;
+                        DiffuseIn(work, W, H, x, y, rev ? -1 : 1, vr - pr[c], vg - pg[c], vb - pb[c], 8, 8);   // within the 8 x 8 block
                     }
                 }
                 isInk[y * W + x] = on;
@@ -301,6 +310,24 @@ static class RetroConvert
     }
 
     // spreads a pixel's error to its unvisited neighbours (Floyd-Steinberg; dx = the direction of travel)
+    // Error diffusion for machines with colours per block (ZX Spectrum, C64, MSX): the error only goes to pixels of the
+    // same bw x bh block, and what is left at the block's edge is dropped. Each block is dithered with its own two (or
+    // four) colours only, so one block's error never stirs up the next block's pixels: the colour edges stay clean.
+    static void DiffuseIn(float[] work, int w, int h, int x, int y, int dx, float er, float eg, float eb, int bw, int bh)
+    {
+        int x0 = x - x % bw, y0 = y - y % bh, x1 = x0 + bw, y1 = y0 + bh;
+        SpreadIn(work, w, h, x + dx, y, er, eg, eb, 7f / 16, x0, y0, x1, y1);
+        SpreadIn(work, w, h, x - dx, y + 1, er, eg, eb, 3f / 16, x0, y0, x1, y1);
+        SpreadIn(work, w, h, x, y + 1, er, eg, eb, 5f / 16, x0, y0, x1, y1);
+        SpreadIn(work, w, h, x + dx, y + 1, er, eg, eb, 1f / 16, x0, y0, x1, y1);
+    }
+
+    static void SpreadIn(float[] work, int w, int h, int x, int y, float er, float eg, float eb, float f, int x0, int y0, int x1, int y1)
+    {
+        if (x < x0 || x >= x1 || y < y0 || y >= y1) return;      // outside the block: dropped
+        Spread(work, w, h, x, y, er, eg, eb, f);
+    }
+
     static void Diffuse(float[] work, int w, int h, int x, int y, int dx, float er, float eg, float eb)
     {
         Spread(work, w, h, x + dx, y, er, eg, eb, 7f / 16);
@@ -340,7 +367,7 @@ static class RetroConvert
     }
 
     // The .koa bytes for a picture, and the picture as that file shows it (160 x 200, 0xFFRRGGBB).
-    public static byte[] ToKoala(Bitmap src, bool fill, int dither, out int[] shown)
+    public static byte[] ToKoala(Bitmap src, bool fill, int dither, out int[] shown, int fixedBg = -1)
     {
         const int W = 160, H = 200;
         int[] pal = C64Palette();
@@ -348,11 +375,8 @@ static class RetroConvert
         for (int c = 0; c < 16; c++) { pr[c] = (pal[c] >> 16) & 255; pg[c] = (pal[c] >> 8) & 255; pb[c] = pal[c] & 255; }
         float[] img = Fit(src, W, H, fill, 2);
 
-        // the background: the colour nearest to the most pixels
-        var count = new int[16];
-        for (int i = 0; i < W * H; i++) count[Nearest(img[i * 3], img[i * 3 + 1], img[i * 3 + 2], pr, pg, pb, 16)]++;
-        int bgc = 0;
-        for (int c = 1; c < 16; c++) if (count[c] > count[bgc]) bgc = c;
+        // the background: the colour nearest to the most pixels (an animation keeps one for every frame)
+        int bgc = fixedBg >= 0 && fixedBg < 16 ? fixedBg : KoalaBackground(img, pr, pg, pb);
         var others = new int[15];
         for (int c = 0, n = 0; c < 16; c++) if (c != bgc) others[n++] = c;
 
@@ -437,7 +461,7 @@ static class RetroConvert
                     if (dither == 2)
                     {
                         int c = cols[cell * 4 + pick];
-                        Diffuse(work, W, H, x, y, rev ? -1 : 1, vr - pr[c], vg - pg[c], vb - pb[c]);
+                        DiffuseIn(work, W, H, x, y, rev ? -1 : 1, vr - pr[c], vg - pg[c], vb - pb[c], 4, 8);   // within the 4 x 8 cell
                     }
                 }
                 idx[y * W + x] = (byte)pick;
@@ -467,6 +491,16 @@ static class RetroConvert
         }
         d2[10002] = (byte)bgc;
         return d2;
+    }
+
+    // the C64 colour nearest to the most pixels of img (any number of pixels)
+    static int KoalaBackground(float[] img, float[] pr, float[] pg, float[] pb)
+    {
+        var count = new int[16];
+        for (int i = 0; i + 2 < img.Length; i += 3) count[Nearest(img[i], img[i + 1], img[i + 2], pr, pg, pb, 16)]++;
+        int bgc = 0;
+        for (int c = 1; c < 16; c++) if (count[c] > count[bgc]) bgc = c;
+        return bgc;
     }
 
     // ---------------------------------------------------------------- pictures with their own palette (Atari ST, Amiga)
@@ -713,7 +747,7 @@ static class RetroConvert
                 else
                 {
                     o = Dist(vr, vg, vb, pr[b], pg[b], pb[b]) < Dist(vr, vg, vb, pr[a], pg[a], pb[a]);
-                    if (dither == 2) { int c = o ? b : a; Diffuse(work, W, H, x, y, rev ? -1 : 1, vr - pr[c], vg - pg[c], vb - pb[c]); }
+                    if (dither == 2) { int c = o ? b : a; DiffuseIn(work, W, H, x, y, rev ? -1 : 1, vr - pr[c], vg - pg[c], vb - pb[c], 8, 8); }   // within the 8 x 8 cell
                 }
                 set[y * W + x] = o;
             }
@@ -802,24 +836,52 @@ static class RetroConvert
 
     // The CPC .scr bytes for a picture (mode 0: 160 x 200 wide pixels, 16 colours; mode 1: 320 x 200, 4 colours;
     // each chosen from the 27), and the picture as that file shows it (0xFFRRGGBB).
-    public static byte[] ToCpc(Bitmap src, bool fill, int dither, int mode, out int[] shown)
+    // fixedFw: an animation's colours, kept for every frame (firmware colour numbers), or null to choose them here
+    public static byte[] ToCpc(Bitmap src, bool fill, int dither, int mode, out int[] shown, int[] fixedFw = null)
     {
         int W = mode == 0 ? 160 : 320, H = 200, n = mode == 0 ? 16 : 4;
         int[][] levels = CpcLevels();
         float[] img = Fit(src, W, H, fill, mode == 0 ? 2 : 1);
-        var fw = new List<int>();
-        foreach (int[] q in FreePalette(img, n, levels)) fw.Add(q[1] * 9 + q[0] * 3 + q[2]);   // firmware colour number
-        // with so few colours to pick from, try swapping each one for another of the 27 while that fits better
-        var sample = new float[Math.Min(W * H, 4000) * 3];
-        int count = sample.Length / 3;
-        for (int i = 0; i < count; i++)
+        float[][] all = CpcColours(levels);
+        List<int> fw = fixedFw != null && fixedFw.Length >= 1 && fixedFw.Length <= n ? new List<int>(fixedFw) : CpcChoose(img, n, levels, all);
+        int k2 = fw.Count;
+        var pr = new float[k2]; var pg = new float[k2]; var pb = new float[k2];
+        var shownPal = new int[k2];
+        for (int c = 0; c < k2; c++)
         {
-            int k = (int)((long)i * (W * H) / count) * 3;
-            sample[i * 3] = img[k]; sample[i * 3 + 1] = img[k + 1]; sample[i * 3 + 2] = img[k + 2];
+            pr[c] = all[0][fw[c]]; pg[c] = all[1][fw[c]]; pb[c] = all[2][fw[c]];
+            shownPal[c] = Argb(pr[c], pg[c], pb[c]);
         }
+        float amp = Math.Max(40f, (levels[1][2] - levels[1][0]) / 2f);       // the pattern spans one level step
+        byte[] idx = FreeDither(img, W, H, pr, pg, pb, k2, dither, amp);
+        shown = new int[W * H];
+        for (int i = 0; i < shown.Length; i++) shown[i] = shownPal[idx[i]];
+        return CpcScreen(mode, fw.ToArray(), idx, W);
+    }
+
+    // the 27 colours as RECOIL shows them: all[channel][firmware colour]
+    static float[][] CpcColours(int[][] levels)
+    {
         var all = new float[3][];
         for (int ch = 0; ch < 3; ch++) all[ch] = new float[27];
         for (int c = 0; c < 27; c++) { all[0][c] = levels[0][c / 3 % 3]; all[1][c] = levels[1][c / 9]; all[2][c] = levels[2][c % 3]; }
+        return all;
+    }
+
+    // n of the 27 colours for img (RGB floats, any number of pixels), as firmware colour numbers
+    static List<int> CpcChoose(float[] img, int n, int[][] levels, float[][] all)
+    {
+        var fw = new List<int>();
+        foreach (int[] q in FreePalette(img, n, levels)) fw.Add(q[1] * 9 + q[0] * 3 + q[2]);   // firmware colour number
+        // with so few colours to pick from, try swapping each one for another of the 27 while that fits better
+        int px = img.Length / 3;
+        var sample = new float[Math.Min(px, 4000) * 3];
+        int count = sample.Length / 3;
+        for (int i = 0; i < count; i++)
+        {
+            int k = (int)((long)i * px / count) * 3;
+            sample[i * 3] = img[k]; sample[i * 3 + 1] = img[k + 1]; sample[i * 3 + 2] = img[k + 2];
+        }
         double err = CpcError(sample, fw, all);
         for (bool better = true; better; )
         {
@@ -835,19 +897,7 @@ static class RetroConvert
                     else fw[s] = old;
                 }
         }
-        int k2 = fw.Count;
-        var pr = new float[k2]; var pg = new float[k2]; var pb = new float[k2];
-        var shownPal = new int[k2];
-        for (int c = 0; c < k2; c++)
-        {
-            pr[c] = all[0][fw[c]]; pg[c] = all[1][fw[c]]; pb[c] = all[2][fw[c]];
-            shownPal[c] = Argb(pr[c], pg[c], pb[c]);
-        }
-        float amp = Math.Max(40f, (levels[1][2] - levels[1][0]) / 2f);       // the pattern spans one level step
-        byte[] idx = FreeDither(img, W, H, pr, pg, pb, k2, dither, amp);
-        shown = new int[W * H];
-        for (int i = 0; i < shown.Length; i++) shown[i] = shownPal[idx[i]];
-        return CpcScreen(mode, fw.ToArray(), idx, W);
+        return fw;
     }
 
     // how far the sample pixels are, in all, from their nearest colour of fw
@@ -1043,7 +1093,10 @@ static class RetroConvert
                 else
                 {
                     o = Dist(vr, vg, vb, pr[b], pg[b], pb[b]) < Dist(vr, vg, vb, pr[a], pg[a], pb[a]);
-                    if (dither == 2) { int c = o ? b : a; Diffuse(work, W, H, x, y, rev ? -1 : 1, vr - pr[c], vg - pg[c], vb - pb[c]); }
+                    // within the 8-pixel column: never across a strip's side edges. A strip is one line high, so
+                    // keeping the error inside it as well would leave only sideways spreading (coarse, streaky); it
+                    // goes down to the strip below, in the same column.
+                    if (dither == 2) { int c = o ? b : a; DiffuseIn(work, W, H, x, y, rev ? -1 : 1, vr - pr[c], vg - pg[c], vb - pb[c], 8, H); }
                 }
                 on[y * W + x] = o;
             }
@@ -1098,6 +1151,209 @@ static class RetroConvert
         return Bsave(idx);
     }
 
+    // ---------------------------------------------------------------- retro preview (in memory, never saved)
+
+    // The 8-bit computers the retro preview (Shift+O on a photo or other modern picture) offers, as indexes into
+    // FormatNames. Machines with larger colour spaces (Atari ST, Amiga, MSX2 Screen 8) are left out on purpose: they
+    // show a photo without the colour rules that make the 8-bit look.
+    public static readonly int[] PreviewFormats = { 0, 1, 2, 3, 4, 7 };
+    public static readonly string[] PreviewNames =
+    {
+        "ZX Spectrum  -  256 x 192, 2 colours per 8 x 8",
+        "Commodore 64 multicolour  -  160 x 200, 4 colours per 4 x 8",
+        "Commodore 64 hires  -  320 x 200, 2 colours per 8 x 8",
+        "Amstrad CPC mode 0  -  160 x 200, 16 of 27 colours",
+        "Amstrad CPC mode 1  -  320 x 200, 4 of 27 colours",
+        "MSX  -  256 x 192, 2 colours per 8 x 1"
+    };
+    public static readonly string[] PreviewShort = { "ZX Spectrum", "C64 multicolour", "C64 hires", "Amstrad CPC mode 0", "Amstrad CPC mode 1", "MSX" };
+    public static readonly string[] PreviewDetails =
+    {
+        "256 x 192, 15 colours, 2 per 8 x 8 block",
+        "160 x 200 wide pixels, 16 colours, 4 per 4 x 8 block",
+        "320 x 200, 16 colours, 2 per 8 x 8 block",
+        "160 x 200 wide pixels, 16 of 27 colours",
+        "320 x 200, 4 of 27 colours",
+        "256 x 192, 15 colours, 2 per 8 x 1 strip"
+    };
+    public static readonly string[] DitherShort = { "no dithering", "ordered dithering", "error diffusion" };
+
+    // A picture converted for one of the preview computers, exactly as Convert would make the file, but only in
+    // memory: the file's bytes (handed to RECOIL by the viewer, never written), the extension RECOIL needs to read them,
+    // how many screen lines one pixel of the source became, and the screen's height in lines. Throws with a reason.
+    // Any thread.
+    // fill: the part of the picture at (cropX, cropY) that fills the screen (CropRect), instead of the middle.
+    // lockPal: an animation's colours, the same for every frame (PreviewLock), or null.
+    public static byte[] Preview(Bitmap src, int machine, bool fill, int dither, double cropX, double cropY, int[] lockPal,
+                                 out string ext, out double linesPerPixel, out int screenH)
+    {
+        int f, w, h, pxw;
+        int[] shown;
+        byte[] data = PreviewCore(src, machine, fill, dither, cropX, cropY, lockPal, out f, out shown, out w, out h, out pxw, out linesPerPixel);
+        if (f == 3 || f == 4) CpcHeader(data, "PREVIEW");
+        ext = FormatExts[f];
+        screenH = h;
+        return data;
+    }
+
+    // the conversion behind Preview and SavePreview (CPC screens still need their header)
+    static byte[] PreviewCore(Bitmap src, int machine, bool fill, int dither, double cropX, double cropY, int[] lockPal,
+                              out int f, out int[] shown, out int w, out int h, out int pxw, out double linesPerPixel)
+    {
+        f = PreviewFormats[Math.Max(0, Math.Min(PreviewFormats.Length - 1, machine))];
+        var o = new ConvertOptions { Format = f, Fill = fill, Dither = Math.Max(0, Math.Min(2, dither)), Lock = lockPal };
+        byte[] data;
+        if (fill)
+        {
+            RectangleF c = CropRect(machine, src.Width, src.Height, cropX, cropY);
+            var r = Rectangle.Round(c);
+            r.Intersect(new Rectangle(0, 0, src.Width, src.Height));
+            if (r.Width < 1 || r.Height < 1) r = new Rectangle(0, 0, src.Width, src.Height);
+            using (Bitmap part = src.Clone(r, src.PixelFormat))     // exactly the screen's shape: fills it with no borders
+                data = Render(part, o, out shown, out w, out h, out pxw);
+            linesPerPixel = (double)h / r.Height;
+        }
+        else
+        {
+            data = Render(src, o, out shown, out w, out h, out pxw);
+            double dw = (double)w * pxw;                   // as in Fit: the scale the source was drawn at
+            linesPerPixel = Math.Min(dw / src.Width, (double)h / src.Height);
+        }
+        return data;
+    }
+
+    // An animation in the retro preview keeps the same colours in every frame, so they don't jump from frame to frame:
+    // for the Amstrad CPC the 16 (mode 0) or 4 (mode 1) of its 27 colours, chosen from all the sample frames together;
+    // for the C64 multicolour the screen's shared background colour. The other computers have fixed colours, and their
+    // per-block colours follow each frame (as they would on the real machine): null. sample = some frames of the
+    // animation, upright, as the viewer shows them. Any thread.
+    public static int[] PreviewLock(IList<Bitmap> sample, int machine, bool fill, double cropX, double cropY)
+    {
+        int f = PreviewFormats[Math.Max(0, Math.Min(PreviewFormats.Length - 1, machine))];
+        if (f != 1 && f != 3 && f != 4 || sample == null || sample.Count == 0) return null;
+        int w, h, pxw;
+        ScreenOf(f, out w, out h, out pxw);
+        var img = new float[sample.Count * w * h * 3];
+        for (int i = 0; i < sample.Count; i++)
+        {
+            float[] one = PreviewPixels(sample[i], machine, fill, cropX, cropY, w, h, pxw);
+            Array.Copy(one, 0, img, i * one.Length, one.Length);
+        }
+        if (f == 1)
+        {
+            int[] pal = C64Palette();
+            var pr = new float[16]; var pg = new float[16]; var pb = new float[16];
+            for (int c = 0; c < 16; c++) { pr[c] = (pal[c] >> 16) & 255; pg[c] = (pal[c] >> 8) & 255; pb[c] = pal[c] & 255; }
+            return new[] { KoalaBackground(img, pr, pg, pb) };
+        }
+        int[][] levels = CpcLevels();
+        return CpcChoose(img, f == 3 ? 16 : 4, levels, CpcColours(levels)).ToArray();
+    }
+
+    // the picture's pixels as the converter sees them (cropped and fitted exactly as PreviewCore and Render do it)
+    static float[] PreviewPixels(Bitmap src, int machine, bool fill, double cropX, double cropY, int w, int h, int pxw)
+    {
+        if (!fill) return Fit(src, w, h, false, pxw);
+        RectangleF c = CropRect(machine, src.Width, src.Height, cropX, cropY);
+        var r = Rectangle.Round(c);
+        r.Intersect(new Rectangle(0, 0, src.Width, src.Height));
+        if (r.Width < 1 || r.Height < 1) r = new Rectangle(0, 0, src.Width, src.Height);
+        using (Bitmap part = src.Clone(r, src.PixelFormat)) return Fit(part, w, h, true, pxw);
+    }
+
+    // the file type a preview computer's picture is saved as: its extension, and a line for a Save dialog's filter
+    public static string PreviewExt(int machine)
+    {
+        return FormatExts[PreviewFormats[Math.Max(0, Math.Min(PreviewFormats.Length - 1, machine))]];
+    }
+
+    static readonly string[] PreviewFileTypes =
+    {
+        "ZX Spectrum screen", "C64 Koala Painter picture", "C64 Doodle picture", "Amstrad CPC screen (mode 0)",
+        "Amstrad CPC screen (mode 1)", "MSX Screen 2 picture"
+    };
+
+    public static string PreviewFilter(int machine)
+    {
+        int m = Math.Max(0, Math.Min(PreviewFormats.Length - 1, machine));
+        string ext = PreviewExt(m);
+        return PreviewFileTypes[m] + " (*" + ext + ")|*" + ext;
+    }
+
+    // The retro preview's Save: the picture converted exactly as previewed (computer, dithering, framing and crop) and
+    // saved as that computer's file at dest. As with Convert, RECOIL must show exactly what was meant, and the file is
+    // written under a temporary name and read back before it is kept. dest may only be an existing file when you have
+    // agreed to replace it (the Save dialog asks); a CPC screen whose name has a .pal file beside it is refused, as
+    // RECOIL would show it in that file's colours. Throws with a readable reason. Any thread.
+    // An animation: frame is the frame shown, lockPal the colours kept for every frame (as the preview made them).
+    public static void SavePreview(string path, RetroSim s, string dest, int frame, int[] lockPal)
+    {
+        if ((File.GetAttributes(path) & Util.CloudMask) != 0) throw new IOException("cloud-only, not stored on this PC.");
+        int f, w, h, pxw;
+        int[] shown;
+        double lines;
+        byte[] data;
+        Bitmap src = null;
+        using (AnimSource anim = AnimSource.Open(path))          // the same frame the preview converted
+            if (anim != null) src = anim.Frame(Math.Max(0, Math.Min(anim.Count - 1, frame)));
+        if (src == null) src = Exporter.Decode(path, 0);
+        using (src)
+            data = PreviewCore(src, s.Machine, s.Fill, s.Dither, s.CropX, s.CropY, lockPal, out f, out shown, out w, out h, out pxw, out lines);
+        bool cpc = f == 3 || f == 4;
+        if (cpc && File.Exists(Path.ChangeExtension(dest, ".pal")))
+            throw new IOException("there is a .pal file with the same name beside it, and RECOIL would show the screen in that file's colours. Choose another name.");
+        if (cpc) CpcHeader(data, Path.GetFileNameWithoutExtension(dest));
+        Check(FormatExts[f], data, shown, w, h);
+        string tmp = dest + "." + Guid.NewGuid().ToString("N").Substring(0, 8) + ".tmp";
+        try
+        {
+            File.WriteAllBytes(tmp, data);
+            byte[] back = File.ReadAllBytes(tmp);
+            if (back.Length != data.Length) throw new IOException("the new file did not read back correctly, so nothing was kept.");
+            for (int i = 0; i < back.Length; i++)
+                if (back[i] != data[i]) throw new IOException("the new file did not read back correctly, so nothing was kept.");
+            if (File.Exists(dest)) File.Replace(tmp, dest, null);     // you agreed to replace it in the Save dialog
+            else File.Move(tmp, dest);
+        }
+        catch (Exception)
+        {
+            try { if (File.Exists(tmp)) File.Delete(tmp); } catch (Exception) { }
+            throw;
+        }
+    }
+
+    // The screen of a preview computer: w x h pixels, each pxw times as wide as tall (as Render makes them)
+    static void ScreenOf(int format, out int w, out int h, out int pxw)
+    {
+        pxw = 1;
+        switch (format)
+        {
+            case 1: w = 160; h = 200; pxw = 2; break;
+            case 2: w = 320; h = 200; break;
+            case 3: w = 160; h = 200; pxw = 2; break;
+            case 4: w = 320; h = 200; break;
+            case 5: w = 320; h = 200; break;
+            case 6: w = 320; h = 256; break;
+            case 7: w = 256; h = 192; break;
+            case 8: w = 256; h = 212; break;
+            default: w = 256; h = 192; break;
+        }
+    }
+
+    // Fill the screen: the part of a srcW x srcH picture that the machine's screen shows, the largest with the screen's
+    // shape. cropX / cropY (0..1) say where it sits along the side where the picture is longer (0.5 = the middle).
+    public static RectangleF CropRect(int machine, double srcW, double srcH, double cropX, double cropY)
+    {
+        int f = PreviewFormats[Math.Max(0, Math.Min(PreviewFormats.Length - 1, machine))];
+        int w, h, pxw;
+        ScreenOf(f, out w, out h, out pxw);
+        double aspect = (double)w * pxw / h;               // the screen's width : height as shown
+        double cw = srcW, ch = srcH;
+        if (srcW / srcH > aspect) cw = srcH * aspect; else ch = srcW / aspect;
+        cropX = Math.Max(0, Math.Min(1, cropX)); cropY = Math.Max(0, Math.Min(1, cropY));
+        return new RectangleF((float)((srcW - cw) * cropX), (float)((srcH - ch) * cropY), (float)cw, (float)ch);
+    }
+
     // ---------------------------------------------------------------- converting files
 
     // The converted file's bytes, the picture it shows and its size. Throws with a reason.
@@ -1107,10 +1363,10 @@ static class RetroConvert
         pxw = 1;
         switch (o.Format)
         {
-            case 1: w = 160; h = 200; pxw = 2; return ToKoala(src, o.Fill, o.Dither, out shown);
+            case 1: w = 160; h = 200; pxw = 2; return ToKoala(src, o.Fill, o.Dither, out shown, o.Lock != null && o.Lock.Length == 1 ? o.Lock[0] : -1);
             case 2: w = 320; h = 200; return ToDoodle(src, o.Fill, o.Dither, out shown);
-            case 3: w = 160; h = 200; pxw = 2; return ToCpc(src, o.Fill, o.Dither, 0, out shown);
-            case 4: w = 320; h = 200; return ToCpc(src, o.Fill, o.Dither, 1, out shown);
+            case 3: w = 160; h = 200; pxw = 2; return ToCpc(src, o.Fill, o.Dither, 0, out shown, o.Lock);
+            case 4: w = 320; h = 200; return ToCpc(src, o.Fill, o.Dither, 1, out shown, o.Lock);
             case 5: w = 320; h = 200; return ToDegas(src, o.Fill, o.Dither, out shown);
             case 6: w = 320; h = 256; return ToIff(src, o.Fill, o.Dither, out shown);
             case 7: w = 256; h = 192; return ToSc2(src, o.Fill, o.Dither, out shown);

@@ -339,6 +339,9 @@ sealed partial class MainForm : Form
             canvas.GlowMode = Prefs.Int("glow", 0, 0, 2);
             canvas.CurveMode = Prefs.Int("curvature", 0, 0, 2);
             canvas.AutoEffects = Prefs.Bool("autoEffects", false);
+            simOpts.Machine = Prefs.Int("retroPreviewComputer", 0, 0, RetroConvert.PreviewFormats.Length - 1);
+            simOpts.Dither = Prefs.Int("retroPreviewDither", 1, 0, 2);
+            simOpts.Fill = Prefs.Bool("retroPreviewFill", false);
             autoAdvance = Prefs.Bool("autoAdvance", false);
             canvas.Filmstrip = Prefs.Bool("filmstrip", false);
             preview.Width = Util.S(Prefs.Int("previewWidth", 320, 180, 2000));
@@ -373,7 +376,7 @@ sealed partial class MainForm : Form
 
     void SavePrefs()
     {
-        if (beforeAfter) BaKeepEffects();                  // closing while in before / after keeps what you set there
+        if (beforeAfter && BaKeepsEffects) BaKeepEffects();   // closing while in before / after keeps what you set there
         Rectangle b; bool max;
         if (full) { b = oldBounds; max = oldState == FormWindowState.Maximized; }
         else { b = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds; max = WindowState == FormWindowState.Maximized; }
@@ -402,6 +405,9 @@ sealed partial class MainForm : Form
         Prefs.Set("glow", own.Glow);
         Prefs.Set("curvature", own.Curve);
         Prefs.Set("autoEffects", canvas.AutoEffects);
+        Prefs.Set("retroPreviewComputer", simOpts.Machine);
+        Prefs.Set("retroPreviewDither", simOpts.Dither);
+        Prefs.Set("retroPreviewFill", simOpts.Fill);
         Prefs.Set("autoAdvance", autoAdvance);
         Prefs.Set("filmstrip", canvas.Filmstrip);
         Prefs.Set("previewPane", preview.Visible);
@@ -1130,12 +1136,24 @@ sealed partial class MainForm : Form
         comparePanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
         comparePanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
         cmpA = new Canvas { Margin = new Padding(0, 0, Util.S(1), 0) };
-        cmpB = new Canvas { Margin = new Padding(Util.S(1), 0, 0, 0) };
+        cmpB = new Canvas { Margin = new Padding(0) };
+        // the right half: the retro preview's bar (hidden otherwise) above the right picture
+        rightHost = new Panel { Dock = DockStyle.Fill, Margin = new Padding(Util.S(1), 0, 0, 0), Padding = new Padding(0), BackColor = Color.FromArgb(24, 24, 24) };
+        rightHost.Controls.Add(cmpB);                      // fill first, edge-docked after
+        BuildSimBar();
+        rightHost.Controls.Add(simBar);
         comparePanel.Controls.Add(cmpA, 0, 0);
-        comparePanel.Controls.Add(cmpB, 1, 0);
+        comparePanel.Controls.Add(rightHost, 1, 0);
         // each follows the other's zoom and position
         // (before / after: the right side leads, and the left one always takes its exact scale, see BaMatch)
-        cmpA.ViewChanged += delegate { double z, x, y; int fm; cmpA.GetView(out z, out x, out y, out fm); cmpB.SetView(z, x, y, fm); BaMatch(); };
+        cmpA.ViewChanged += delegate
+        {
+            if (beforeAfter && baSim && simOpts.Fill) return;     // the crop frame: the left side stays fitted, on its own
+            double z, x, y; int fm; cmpA.GetView(out z, out x, out y, out fm);
+            double sc = beforeAfter && baSim ? cmpB.SimScale : 1;           // retro preview: the two pictures differ in size
+            if (fm != 0 || sc > 0) cmpB.SetView(fm == 0 ? z / sc : z, x, y, fm);
+            BaMatch();
+        };
         cmpB.ViewChanged += delegate
         {
             if (beforeAfter) { BaMatch(); return; }
@@ -1144,13 +1162,206 @@ sealed partial class MainForm : Form
         // before / after: whichever side moves to another picture (keys, wheel), the other follows
         cmpA.ImageChanged += delegate (string p, int i) { BaFollow(cmpB, p); BaMatch(); };
         cmpB.ImageChanged += delegate (string p, int i) { BaFollow(cmpA, p); BaMatch(); };
-        cmpB.Resize += delegate { if (beforeAfter) BeginInvoke(new MethodInvoker(BaMatch)); };   // after the right side has fitted itself again
+        cmpB.Resize += delegate { if (beforeAfter) BeginInvoke(new MethodInvoker(BaMatch)); };
+        // retro preview of an animated GIF or WebP: the left side shows the frame the right side shows
+        cmpB.FrameShown += delegate (int f) { if (beforeAfter && baSim) cmpA.ShowFrameOf(f); };   // after the right side has fitted itself again
         foreach (Control c in new Control[] { cmpA, cmpB })
         {
             c.AllowDrop = true;
             c.DragEnter += OnDragEnterFiles;
             c.DragDrop += delegate { };                    // dropping files while comparing does nothing
         }
+        // retro preview, Fill the screen: dragging the frame on the left moves the crop; the right side is converted
+        // again when you let go
+        cmpA.CropDragged += delegate (RectangleF r) { SimCropFrom(r); };
+        cmpA.CropDropped += delegate (RectangleF r)
+        {
+            SimCropFrom(r);
+            if (!beforeAfter || !baSim || !simOpts.Fill) return;
+            cmpB.Simulation = simOpts;
+            BaTitle();
+        };
+    }
+
+    // the crop position (0..1 each way) from where the frame is on the left picture
+    void SimCropFrom(RectangleF r)
+    {
+        double w, h;
+        if (!cmpA.UprightSize(out w, out h)) return;
+        simOpts.CropX = w - r.Width > 0.5 ? r.X / (w - r.Width) : 0.5;
+        simOpts.CropY = h - r.Height > 0.5 ? r.Y / (h - r.Height) : 0.5;
+        simOpts.CropX = Math.Max(0, Math.Min(1, simOpts.CropX));
+        simOpts.CropY = Math.Max(0, Math.Min(1, simOpts.CropY));
+    }
+
+    // the retro preview's bar, above the right picture, in three columns, each control with a short grey note under it:
+    //   Computer [box]           [Framing box]          [Save...]
+    //            screen, colours  Shift+F changes this   Ctrl+S saves
+    //   Dither   [box]           [Centre the crop]  (only with Fill the screen)
+    //            Q, D change these
+    // (the choices are also on the Effects menu)
+    Panel rightHost;
+    Panel simBar;
+    DarkCombo simMachine, simDither, simFrame;
+    Label simDetail;                                       // the chosen computer's screen and colours
+    Button simCentre;
+    bool simSyncing;
+
+    void BuildSimBar()
+    {
+        Color panelBg = Color.FromArgb(38, 38, 38), boxBg = Color.FromArgb(52, 52, 52), note = Color.FromArgb(150, 150, 150);
+        Font barFont = new Font("Segoe UI", 9.5f), noteFont = new Font("Segoe UI", 8.5f);
+        int boxH = Util.S(26), noteH = Util.S(18);
+        int row1 = Util.S(6), row2 = Util.S(58);                       // each row: a box, then its note under it
+        int col1 = Util.S(10), box1 = col1 + Util.S(76);               // labels, then the Computer and Dither boxes
+        int col2 = box1 + Util.S(290), col3 = col2 + Util.S(230);      // Framing, then Save
+        simBar = new Panel { Dock = DockStyle.Top, Height = row2 + boxH + noteH + Util.S(8), BackColor = panelBg, Visible = false };
+        Func<string, int, int, Label> label = delegate (string text, int x, int y)
+        {
+            var l = new Label { Text = text, Left = x, Top = y, Width = Util.S(76), Height = boxH, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Color.Silver, Font = barFont };
+            simBar.Controls.Add(l);
+            return l;
+        };
+        Func<int, int, int, DarkCombo> box = delegate (int x, int y, int w)
+        {
+            var c = new DarkCombo { Left = x, Top = y, Width = w, Height = boxH, BackColor = boxBg, ForeColor = Color.White, Font = barFont };
+            c.DropDownClosed += delegate { cmpB.Focus(); };
+            simBar.Controls.Add(c);
+            return c;
+        };
+        Func<string, int, int, int, ContentAlignment, Label> noteUnder = delegate (string text, int x, int y, int w, ContentAlignment align)
+        {
+            var l = new Label { Text = text, Left = x, Top = y + boxH + Util.S(1), Width = w, Height = noteH, TextAlign = align, ForeColor = note, Font = noteFont };
+            simBar.Controls.Add(l);
+            return l;
+        };
+        Func<string, Color, Color, Button> button = delegate (string text, Color back, Color hover)
+        {
+            var b = new Button { Text = text, Height = boxH, TabStop = false, FlatStyle = FlatStyle.Flat, BackColor = back, ForeColor = Color.White, Font = barFont };
+            b.FlatAppearance.BorderSize = 0;
+            b.FlatAppearance.MouseOverBackColor = hover;
+            simBar.Controls.Add(b);
+            return b;
+        };
+
+        // column 1: the computer, and under it its screen and colours; the dithering, and under it the keys
+        label("Computer:", col1, row1);
+        simMachine = box(box1, row1, Util.S(200));
+        simMachine.SetItems(RetroConvert.PreviewShort);
+        simDetail = noteUnder("", box1, row1, Util.S(280), ContentAlignment.TopLeft);
+        label("Dither:", col1, row2);
+        simDither = box(box1, row2, Util.S(270));
+        simDither.SetItems(RetroConvert.DitherNames);
+        noteUnder("Q, D change these", box1, row2, Util.S(270), ContentAlignment.TopLeft);
+
+        // column 2: the framing, its key, and Centre the crop under it (only with Fill the screen)
+        int frameW = Util.S(190);
+        simFrame = box(col2, row1, frameW);
+        simFrame.SetItems("Whole picture (borders)", "Fill the screen (cropped)");
+        noteUnder("Shift+F changes this", col2, row1, frameW, ContentAlignment.TopCenter);
+        simCentre = button("Centre the crop", boxBg, Color.FromArgb(72, 72, 72));
+        simCentre.ForeColor = Color.Gainsboro;
+        simCentre.Width = Util.S(120);
+        simCentre.Left = col2 + (frameW - simCentre.Width) / 2;
+        simCentre.Top = row2;
+        simCentre.Visible = false;
+        simCentre.Click += delegate { SimCentre(); cmpB.Focus(); };
+
+        // column 3: Save, and its key
+        // Save: the computer's own file (as previewed, no screen effects) plus a PNG of the screen with its effects
+        Button save = button("Save...", Color.FromArgb(60, 130, 230), Color.FromArgb(80, 150, 245));
+        save.Width = Util.S(90);
+        save.Left = col3; save.Top = row1;
+        save.Click += delegate { SimSave(); cmpB.Focus(); };
+        noteUnder("Ctrl+S saves", col3 - Util.S(30), row1, save.Width + Util.S(60), ContentAlignment.TopCenter);
+
+        simMachine.SelectedIndexChanged += delegate { if (!simSyncing) SimSet(simMachine.SelectedIndex, simOpts.Dither, simOpts.Fill); };
+        simDither.SelectedIndexChanged += delegate { if (!simSyncing) SimSet(simOpts.Machine, simDither.SelectedIndex, simOpts.Fill); };
+        simFrame.SelectedIndexChanged += delegate { if (!simSyncing) SimSet(simOpts.Machine, simOpts.Dither, simFrame.SelectedIndex == 1); };
+        navTip.SetToolTip(simMachine, "Which 8-bit computer to show the picture on (Q next, Shift+Q previous)");
+        navTip.SetToolTip(simDither, "How in-between colours are made from the computer's own (D next, Shift+D previous)");
+        navTip.SetToolTip(simFrame, "Whole picture with black borders, or cropped to fill the computer's screen (Shift+F); when cropped, drag the frame on the left picture to choose the part shown");
+        navTip.SetToolTip(simCentre, "Put the crop back in the middle of the picture");
+        navTip.SetToolTip(save, "Save the picture as this computer's own file (as previewed, without screen effects), and a PNG of the screen with its effects to share (Ctrl+S)");
+    }
+
+    // ---- the retro preview's Save (button, Ctrl+S, Effects menu): two new files from the picture shown.
+    //   1. The computer's own file (.scr, .koa, .dd, .sc2), converted exactly as previewed: computer, dithering,
+    //      framing and crop. It holds the picture only, as the machine stores it: no screen effects. Checked by RECOIL.
+    //   2. Beside it, a PNG of the screen as the right side shows it, with its screen effects (TV aspect, signal,
+    //      scanlines, mask, glow, curvature), each original line 4 pixels high: a picture to share. Verified lossless.
+    // The Save dialog names the first file (and asks before replacing one); the PNG gets a free name, never replacing
+    // anything. The original picture is never changed.
+    bool simSaving;
+
+    void SimSave()
+    {
+        if (!beforeAfter || !baSim || simSaving) return;
+        string src = baPath;
+        if (src == null || !cmpB.HasPicture) { cmpB.ShowMessage("Wait until the preview is shown, then save it"); return; }
+        RetroSim s = simOpts.Copy();
+        cmpB.PauseAnimation();                             // an animation: the frame shown is the one saved
+        int frame = cmpB.SimFrame, frames = cmpB.SimFrameCount;   // (with the colours kept for every frame)
+        int[] lockPal = cmpB.SimLock;
+        string ext = RetroConvert.PreviewExt(s.Machine), name = RetroConvert.PreviewShort[s.Machine];
+        string dest;
+        using (var d = new SaveFileDialog())
+        {
+            d.Title = "Save as a " + name + " picture (a PNG of the screen with its effects is saved beside it)";
+            d.Filter = RetroConvert.PreviewFilter(s.Machine);
+            d.DefaultExt = ext.TrimStart('.'); d.AddExtension = true; d.OverwritePrompt = true;
+            d.InitialDirectory = Path.GetDirectoryName(src);
+            d.FileName = Path.GetFileNameWithoutExtension(src) + ext;
+            if (d.ShowDialog(this) != DialogResult.OK) return;
+            dest = d.FileName;
+        }
+        if (!string.Equals(Path.GetExtension(dest), ext, StringComparison.OrdinalIgnoreCase)) dest += ext;
+        string dir = Path.GetDirectoryName(dest);
+        string why = RefuseSource(dir);                    // local drives only, as for every other file operation
+        if (why != null) { Warn("RetroGleek can't save there: " + why); return; }
+        if (string.Equals(Path.GetFullPath(dest), Path.GetFullPath(src), StringComparison.OrdinalIgnoreCase))
+        { Warn("That is the picture itself. Choose another name: the original is never changed."); return; }
+        Bitmap shot;
+        try { shot = cmpB.RenderAsShown(4); }               // the screen, effects included (UI thread: it uses the viewer)
+        catch (Exception ex) { Warn("The picture of the screen could not be made:\n\n" + Util.Why(ex)); return; }
+        string png = Util.UniquePath(dir, Path.GetFileNameWithoutExtension(dest) + " - " + name + " screen" + (frames > 1 ? " frame " + (frame + 1) : ""), ".png");
+        simSaving = true;
+        cmpB.ShowMessage("Saving " + Path.GetFileName(dest) + " and the screen PNG...");
+        ThreadPool.QueueUserWorkItem(delegate
+        {
+            string err1 = null, err2 = null;
+            try { RetroConvert.SavePreview(src, s, dest, frame, lockPal); }
+            catch (Exception ex) { err1 = Util.Why(ex); }
+            try { if (shot != null) Exporter.SavePng(shot, png, false); else err2 = "there was no picture to save."; }
+            catch (Exception ex) { err2 = Util.Why(ex); }
+            finally { if (shot != null) shot.Dispose(); }
+            Util.Post(this, delegate { SimSaveDone(dest, png, err1, err2); });
+        });
+    }
+
+    void SimSaveDone(string dest, string png, string err1, string err2)
+    {
+        simSaving = false;
+        string dir = Path.GetDirectoryName(dest);
+        if (grid.Dir != null && grid.Covers(dir)) grid.Rescan();
+        var saved = new List<string>();
+        if (err1 == null) saved.Add(Path.GetFileName(dest));
+        if (err2 == null) saved.Add(Path.GetFileName(png));
+        if (beforeAfter && baSim && saved.Count > 0) cmpB.ShowMessage("Saved " + string.Join(" and ", saved));
+        var errs = new List<string>();
+        if (err1 != null) errs.Add(Path.GetFileName(dest) + ": " + err1);
+        if (err2 != null) errs.Add(Path.GetFileName(png) + ": " + err2);
+        if (errs.Count > 0) Warn((saved.Count > 0 ? "Saved " + string.Join(" and ", saved) + ", but not:" : "Nothing was saved:") + "\n\n" + string.Join("\n", errs));
+    }
+
+    // Fill the screen: the crop back in the middle
+    void SimCentre()
+    {
+        if (simOpts.CropX == 0.5 && simOpts.CropY == 0.5) return;
+        simOpts.CropX = simOpts.CropY = 0.5;
+        if (!beforeAfter || !baSim) return;
+        cmpB.Simulation = simOpts;
+        BaMatch();
     }
 
     bool CanCompare() { return !viewing && !comparing && grid.SelectedIndices().Count == 2; }
@@ -1215,12 +1426,21 @@ sealed partial class MainForm : Form
     // the screen effects you have chosen (or the automatic ones). Built on the compare view: zoom and panning are
     // linked, both sides fit the window, and moving to another picture moves both. Effect keys and presets change
     // the right side only, and what you set there is kept when you close it. Display only, like every effect.
+    //
+    // Retro preview: the same view for a photo or any other modern picture. The left side shows the picture as it is,
+    // the right side the picture converted in memory for an 8-bit computer (ZX Spectrum, C64, Amstrad CPC, MSX), with
+    // the dithering and framing you choose, shown with the screen effects. Nothing is written: Convert (Ctrl+Shift+E)
+    // makes the file. The left side follows the right side's zoom, scaled so the picture is the same size on both.
     bool beforeAfter, baFromViewer;
     List<string> baList;
     string baPath;
+    bool baSim;                                            // the retro preview (a modern picture), not before / after
+    readonly RetroSim simOpts = new RetroSim { Dither = 1 };   // the retro preview's choices (remembered in settings.ini)
+    bool simAutoForced, simFxTouched;                      // automatic effects switched on for the preview only
 
     static bool RetroFile(string p) { return p != null && !Util.IsNative(p) && Retro.Claims(p); }
 
+    // before / after: a retro picture
     bool CanBeforeAfter()
     {
         if (comparing) return false;
@@ -1229,24 +1449,37 @@ sealed partial class MainForm : Form
         return sel.Count == 1 && !grid.Items[sel[0]].Offline && RetroFile(grid.Items[sel[0]].Path);
     }
 
+    // retro preview: a modern picture (photo, PNG, WebP ...)
+    bool CanRetroPreview()
+    {
+        if (comparing) return false;
+        if (viewing) return canvas.HasPicture && canvas.Platform == null;
+        List<int> sel = grid.SelectedIndices();
+        return sel.Count == 1 && !grid.Items[sel[0]].Offline && !RetroFile(grid.Items[sel[0]].Path);
+    }
+
+    // Shift+O: before / after for a retro picture, the retro preview for any other
     void StartBeforeAfter()
     {
         if (comparing) return;
         string path;
+        bool simulate;
         if (viewing)
         {
-            if (canvas.Platform == null) { canvas.ShowMessage("Before / after is for retro pictures (RECOIL formats)"); return; }
+            if (!canvas.HasPicture) return;
             path = canvas.CurrentPath;
+            simulate = canvas.Platform == null;
         }
         else
         {
             List<int> sel = grid.SelectedIndices();
-            if (sel.Count != 1 || !RetroFile(grid.Items[sel[0]].Path))
+            if (sel.Count != 1 || grid.Items[sel[0]].Offline)
             {
-                status.Text = "  Before / after (Shift+O): select one retro picture, or press Shift+O in the viewer";
+                status.Text = "  Shift+O: select one picture (before / after for a retro picture, the 8-bit retro preview for a photo), or press it in the viewer";
                 return;
             }
             path = grid.Items[sel[0]].Path;
+            simulate = !RetroFile(path);
         }
         if (path == null) return;
         baFromViewer = viewing;
@@ -1256,27 +1489,85 @@ sealed partial class MainForm : Form
         baPath = path;
         comparing = true;
         beforeAfter = true;
+        baSim = simulate;
         SuspendLayout();
         browse.Visible = false; status.Visible = false; canvas.Visible = false;
         cmpA.Visible = true; cmpB.Visible = true;
         comparePanel.Visible = true;
+        simBar.Visible = simulate;
         ResumeLayout(true);
         cmpA.UseEffects(canvas.ManualEffects);
         cmpA.AutoEffects = false;
         cmpA.EffectsOff = true;                            // before: the picture as decoded
         cmpB.UseEffects(canvas.ManualEffects);
-        cmpB.AutoEffects = canvas.AutoEffects;             // after: your effects, or the automatic ones
+        EffectSet own = canvas.ManualEffects;
+        // the retro preview is about the screen too: with no effects of your own, the automatic ones are used (for the
+        // preview only, unless you change them there)
+        simAutoForced = simulate && !canvas.AutoEffects && !own.Tv && own.Scan == 0 && own.Mask == 0 && own.Signal == 0 && own.Glow == 0 && own.Curve == 0;
+        simFxTouched = false;
+        cmpB.AutoEffects = canvas.AutoEffects || simAutoForced;   // after: your effects, or the automatic ones
         cmpB.EffectsOff = false;
         foreach (Canvas c in new[] { cmpA, cmpB }) { c.FitLock = true; c.PixMode = canvas.PixMode; c.Checker = canvas.Checker; c.InfoOn = canvas.InfoOn; }
+        if (simulate) { SyncSimBar(); cmpB.Simulation = simOpts; }
+        cmpA.FollowFrames = simulate;                      // an animation: the left side shows the right side's frame
         cmpA.Open(baList, at);
         cmpB.Open(baList, at);
-        cmpA.ShowMessage("Before: as decoded, no screen effects");
-        cmpB.ShowMessage("After: " + (cmpB.AutoEffects ? "automatic screen effects" : "with your screen effects") + "   (Shift+O or Esc closes)");
+        if (simulate)
+        {
+            cmpA.ShowMessage(simOpts.Fill ? "Before: the picture as it is. Drag the frame to choose the part the screen shows" : "Before: the picture as it is");
+            cmpB.ShowMessage("After: " + SimText() + "   (Q computer, D dither, Shift+F framing; Shift+O or Esc closes)");
+        }
+        else
+        {
+            cmpA.ShowMessage("Before: as decoded, no screen effects");
+            cmpB.ShowMessage("After: " + (cmpB.AutoEffects ? "automatic screen effects" : "with your screen effects") + "   (Shift+O or Esc closes)");
+        }
         BaTitle();
         cmpB.Focus();
     }
 
-    void BaTitle() { Text = "Before / after: " + Path.GetFileName(baPath) + " - RetroGleek"; }
+    void BaTitle()
+    {
+        Text = (baSim ? "Retro preview (" + SimText() + "): " : "Before / after: ") + Path.GetFileName(baPath) + " - RetroGleek";
+    }
+
+    // e.g. "ZX Spectrum, ordered dithering, whole picture"
+    string SimText()
+    {
+        return RetroConvert.PreviewShort[simOpts.Machine] + ", " + RetroConvert.DitherShort[simOpts.Dither] + ", " + (simOpts.Fill ? "filling the screen" : "whole picture");
+    }
+
+    void SyncSimBar()
+    {
+        simSyncing = true;
+        try
+        {
+            simMachine.SelectedIndex = simOpts.Machine;
+            simDither.SelectedIndex = simOpts.Dither;
+            simFrame.SelectedIndex = simOpts.Fill ? 1 : 0;
+        }
+        finally { simSyncing = false; }
+        simCentre.Visible = simOpts.Fill;
+        simDetail.Text = RetroConvert.PreviewDetails[simOpts.Machine];
+    }
+
+    // a new retro preview choice (bar, keys or the Effects menu); converts the picture again when the preview is open
+    void SimSet(int machine, int dither, bool fill)
+    {
+        int n = RetroConvert.PreviewFormats.Length;
+        machine = ((machine % n) + n) % n;
+        dither = ((dither % 3) + 3) % 3;
+        if (machine == simOpts.Machine && dither == simOpts.Dither && fill == simOpts.Fill) return;
+        simOpts.Machine = machine; simOpts.Dither = dither; simOpts.Fill = fill;
+        SyncSimBar();
+        if (!beforeAfter || !baSim) return;
+        cmpB.Simulation = simOpts;
+        BaMatch();
+        BaTitle();
+        cmpB.ShowMessage(SimText());
+        if (fill) cmpA.ShowMessage("Drag the frame to choose the part of the picture the screen shows");
+        cmpB.Focus();
+    }
 
     // one side moved to another picture: the other follows
     void BaFollow(Canvas other, string p)
@@ -1291,13 +1582,31 @@ sealed partial class MainForm : Form
     // Before / after: the left side always shows the picture at the right side's scale and position, so both are the
     // same size on screen. Fitting on its own, the left side would be larger whenever scanlines make the right side
     // fit at a whole-number size (300% beside 200%, say). True TV aspect can still make them differ slightly in width.
+    // Retro preview: the two sides show pictures of different sizes (a photo, and a 320 x 200 screen say), so the left
+    // side takes the right side's zoom times the conversion's scale (SimScale): the picture's height is the same on
+    // both, and as both are centred on the picture, the same offset keeps them in step. Until the converted picture is
+    // there, the left side fits its half. With Fill the screen, the left side shows the whole picture, fitted, with a
+    // frame around the part the screen shows (drag it to move the crop), and zooms on its own.
     void BaMatch()
     {
         if (!beforeAfter) return;
         double z, x, y; int fm;
         cmpB.GetView(out z, out x, out y, out fm);
-        cmpA.SetView(z, x, y, 0);
+        if (!baSim) { cmpA.SetView(z, x, y, 0); return; }
+        if (simOpts.Fill)                                  // the whole picture fitted, with the crop frame on it
+        {
+            cmpA.SetView(z, x, y, 2);
+            double w, h;
+            cmpA.CropFrame = cmpA.UprightSize(out w, out h) ? RetroConvert.CropRect(simOpts.Machine, w, h, simOpts.CropX, simOpts.CropY) : RectangleF.Empty;
+            return;
+        }
+        cmpA.CropFrame = RectangleF.Empty;
+        double sc = cmpB.SimScale;
+        if (sc > 0) cmpA.SetView(z * sc, x, y, 0); else cmpA.SetView(z, x, y, 2);
     }
+
+    // the preview's own automatic effects (switched on because you had none) are not kept unless you changed them there
+    bool BaKeepsEffects { get { return !baSim || !simAutoForced || simFxTouched; } }
 
     // what you set on the right side becomes the viewer's own settings (also when RetroGleek closes meanwhile)
     void BaKeepEffects()
@@ -1311,11 +1620,16 @@ sealed partial class MainForm : Form
     {
         if (!beforeAfter) return;
         string shown = baPath;
-        BaKeepEffects();
+        if (BaKeepsEffects) BaKeepEffects();
         beforeAfter = false;
         comparing = false;
         comparePanel.Visible = false;
+        simBar.Visible = false;
         cmpA.Release(); cmpB.Release();
+        cmpB.Simulation = null;
+        cmpA.FollowFrames = false;
+        cmpA.CropFrame = RectangleF.Empty;
+        baSim = false;
         cmpA.FitLock = false; cmpB.FitLock = false;        // side-by-side compare keeps its own behaviour
         cmpA.EffectsOff = false;
         baList = null; baPath = null;
@@ -1334,7 +1648,8 @@ sealed partial class MainForm : Form
     }
 
     // keys in before / after: effects go to the right side only; moving and zooming to one side (the other follows);
-    // turning, flipping and display options to both
+    // turning, flipping and display options to both. Retro preview: Q / D / Shift+F choose the computer, the dithering
+    // and the framing; turning and flipping are not used
     bool BeforeAfterKey(Keys keyData)
     {
         Keys k = keyData & Keys.KeyCode;
@@ -1343,10 +1658,19 @@ sealed partial class MainForm : Form
         if (k == Keys.O && shift && !ctrl && !alt) { EndBeforeAfter(); return true; }
         if (ctrl && shift && k == Keys.C) { EndBeforeAfter(); return true; }
         if (k == Keys.Enter && !ctrl) { ToggleFull(); return true; }
+        if (baSim && ctrl && !shift && !alt && k == Keys.S) { SimSave(); return true; }   // retro preview: save the files
         if (ctrl || alt) return true;                      // Ctrl+C / Ctrl+S etc. do nothing here (presets are handled before)
         if (k == Keys.S || k == Keys.J || k == Keys.Z || k == Keys.Up || k == Keys.Down) return true;   // no slideshow, filmstrip or loupe
+        if (baSim)
+        {
+            if (k == Keys.Q) { SimSet(simOpts.Machine + (shift ? -1 : 1), simOpts.Dither, simOpts.Fill); return true; }   // computer
+            if (k == Keys.D) { SimSet(simOpts.Machine, simOpts.Dither + (shift ? -1 : 1), simOpts.Fill); return true; }   // dithering
+            if (k == Keys.F && shift) { SimSet(simOpts.Machine, simOpts.Dither, !simOpts.Fill); return true; }          // framing
+            if (k == Keys.R || k == Keys.L || k == Keys.H || k == Keys.V) return true;   // the conversion is of the upright picture
+            if (k == Keys.P || k == Keys.Oemcomma || k == Keys.OemPeriod) return cmpB.HandleKey(keyData);   // animation: the left side follows
+        }
         bool effectKey = k == Keys.T || k == Keys.K || k == Keys.M || k == Keys.C || k == Keys.W || k == Keys.U || k == Keys.O || k == Keys.A;
-        if (effectKey) { bool fx = cmpB.HandleKey(keyData); BaMatch(); return fx; }   // scanlines on / off can change the fit
+        if (effectKey) { simFxTouched = true; bool fx = cmpB.HandleKey(keyData); BaMatch(); return fx; }   // scanlines on / off can change the fit
         bool oneSide = k == Keys.Left || k == Keys.Right || k == Keys.PageUp || k == Keys.PageDown || k == Keys.Space ||
                        k == Keys.Back || k == Keys.Home || k == Keys.End ||
                        k == Keys.Add || k == Keys.Subtract || k == Keys.Oemplus || k == Keys.OemMinus ||
