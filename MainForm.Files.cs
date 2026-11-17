@@ -1627,6 +1627,8 @@ partial class MainForm
             "  Ctrl+S (retro preview)  save the computer's own file (.scr, .koa, .dd, .sc2), as previewed and without",
             "                          screen effects, plus a PNG of the screen with its effects beside it, to share",
             "                          (an animation: the frame shown; it pauses there)",
+            "  Ctrl+Shift+S (retro preview, animation)   save the whole animation as a GIF (the converted",
+            "                          frames, no screen effects) and, if you like, every frame as a PNG with them",
             "  A                       automatic effects: the usual screen of each picture's computer (A again: your own)",
             "  Ctrl+1 .. Ctrl+9        use a saved screen effects preset (Effects > Save these effects as a preset)",
             "  T                       True TV aspect: pixels shaped as on the original PAL / NTSC screen (retro)",
@@ -2131,6 +2133,9 @@ partial class MainForm
         LastEntry.InCompare = true;
         MenuEntry(effects, "Retro preview: sa&ve the computer's file and a PNG of the screen...", "Ctrl+S", delegate { SimSave(); },
                   delegate { return beforeAfter && baSim && !simSaving; }, null);
+        LastEntry.InCompare = true;
+        MenuEntry(effects, "Retro preview: save the &animation (GIF, and PNGs with the screen effects)...", "Ctrl+Shift+S", delegate { SimSaveAnim(); },
+                  delegate { return beforeAfter && baSim && !simSaving && cmpB.SimFrameCount > 1; }, null);
         LastEntry.InCompare = true;
         MenuEntry(effects, "&Automatic: the usual screen of each picture's computer", "A", delegate { canvas.ToggleAuto(); }, null, delegate { return canvas.AutoEffects; });
         LastEntry.Text = delegate

@@ -391,6 +391,59 @@ sealed class Canvas : Control
         Flash("Animation paused at frame " + (frame + 1) + "   (P plays it again)");
     }
     public int SimFrameCount { get { return AnimActive ? frameCount : 1; } }
+    public int SimFramesReady { get { return AnimActive && cur.Frames != null ? cur.Frames.Count : SimFrameCount; } }
+    public object SimPicture { get { return cur; } }   // changes when the preview is made again or another picture is shown
+
+    // Saving the retro preview's animation (UI thread, because the viewer paints these frames): every converted frame
+    // as indices into one colour table, with each frame's time. Throws if the animation isn't complete.
+    public void SimPlainFrames(out int w, out int h, out int[] palette, out List<byte[]> frames, out int[] delays)
+    {
+        if (!AnimActive || cur.Frames == null || cur.Frames.Count < frameCount) throw new InvalidOperationException("the animation isn't converted yet.");
+        w = cur.Frames[0].Width; h = cur.Frames[0].Height;
+        var map = new Dictionary<int, int>();
+        var pal = new List<int>();
+        frames = new List<byte[]>();
+        var row = new int[w];
+        for (int f = 0; f < frameCount; f++)
+        {
+            Bitmap b = cur.Frames[f];
+            if (b.Width != w || b.Height != h) throw new InvalidOperationException("the frames are not all the same size.");
+            var ix = new byte[w * h];
+            BitmapData d = b.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            try
+            {
+                for (int y = 0; y < h; y++)
+                {
+                    Marshal.Copy(d.Scan0 + y * d.Stride, row, 0, w);
+                    for (int x = 0; x < w; x++)
+                    {
+                        int c = row[x] | unchecked((int)0xFF000000), k;
+                        if (!map.TryGetValue(c, out k))
+                        {
+                            if (pal.Count == 256) throw new InvalidOperationException("the animation has more than 256 colours, more than a GIF can hold.");
+                            k = pal.Count; map.Add(c, k); pal.Add(c);
+                        }
+                        ix[y * w + x] = (byte)k;
+                    }
+                }
+            }
+            finally { b.UnlockBits(d); }
+            frames.Add(ix);
+        }
+        palette = pal.ToArray();
+        delays = new int[frameCount];
+        Array.Copy(frameDelays, delays, Math.Min(frameCount, frameDelays.Length));
+    }
+
+    // one frame of the animation drawn with its screen effects, as RenderAsShown draws the frame shown
+    public Bitmap RenderFrameAsShown(int f, int linesScale)
+    {
+        if (!AnimActive || cur.Frames == null || f < 0 || f >= cur.Frames.Count) return null;
+        int keep = frame;
+        frame = f; cur.Img = cur.Frames[f];
+        try { return RenderAsShown(linesScale); }
+        finally { frame = keep; cur.Img = cur.Frames[keep]; Invalidate(); }
+    }
     public int[] SimLock { get { return cur == null ? null : cur.SimLock; } }
     bool animPaused;
     bool flipX, flipY;                     // H / V: mirror the current picture (reset for the next one)

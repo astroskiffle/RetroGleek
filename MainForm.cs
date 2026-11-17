@@ -1354,6 +1354,116 @@ sealed partial class MainForm : Form
         if (errs.Count > 0) Warn((saved.Count > 0 ? "Saved " + string.Join(" and ", saved) + ", but not:" : "Nothing was saved:") + "\n\n" + string.Join("\n", errs));
     }
 
+    // Ctrl+Shift+S in the retro preview of an animated GIF or WebP: the whole animation as an animated GIF of the
+    // converted frames (no screen effects: a GIF holds 256 colours, the effects make thousands), and if you like every
+    // frame as a PNG with its screen effects, as Ctrl+S makes one. The GIF is checked before it is kept; PNGs get free
+    // names ("name frame 001.png" ...), so nothing is overwritten. Changing the preview or closing it stops the PNGs.
+    void SimSaveAnim()
+    {
+        if (!beforeAfter || !baSim || simSaving) return;
+        string src = baPath;
+        int n = cmpB.SimFrameCount;
+        if (src == null || !cmpB.HasPicture) { cmpB.ShowMessage("Wait until the preview is shown, then save it"); return; }
+        if (n < 2) { cmpB.ShowMessage("This picture isn't animated: Ctrl+S saves it"); return; }
+        int ready = cmpB.SimFramesReady;
+        if (ready < n) { cmpB.ShowMessage("Wait until all " + n + " frames are converted (" + ready + " so far), then save"); return; }
+        cmpB.PauseAnimation();
+        string name = RetroConvert.PreviewShort[simOpts.Machine];
+        string dest;
+        using (var d = new SaveFileDialog())
+        {
+            d.Title = "Save the " + name + " animation as a GIF (the converted frames, without screen effects)";
+            d.Filter = "Animated GIF|*.gif";
+            d.DefaultExt = "gif"; d.AddExtension = true; d.OverwritePrompt = true;
+            d.InitialDirectory = Path.GetDirectoryName(src);
+            d.FileName = Path.GetFileNameWithoutExtension(src) + " - " + name + ".gif";
+            if (d.ShowDialog(this) != DialogResult.OK) return;
+            dest = d.FileName;
+        }
+        if (!string.Equals(Path.GetExtension(dest), ".gif", StringComparison.OrdinalIgnoreCase)) dest += ".gif";
+        string dir = Path.GetDirectoryName(dest);
+        string why = RefuseSource(dir);                    // local drives only, as for every other file operation
+        if (why != null) { Warn("RetroGleek can't save there: " + why); return; }
+        if (string.Equals(Path.GetFullPath(dest), Path.GetFullPath(src), StringComparison.OrdinalIgnoreCase))
+        { Warn("That is the picture itself. Choose another name: the original is never changed."); return; }
+        string stem = Path.GetFileNameWithoutExtension(dest);
+        DialogResult pngs = MessageBox.Show(this,
+            "Also save every frame with its screen effects as a PNG, to share or to make a video from?\n\n" +
+            n + " PNG files, \"" + stem + " frame " + 1.ToString(FrameDigits(n)) + ".png\" and so on, next to the GIF. Each is drawn as Ctrl+S " +
+            "draws one, which takes a moment per frame. Nothing is overwritten.",
+            "Save the animation", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
+        if (pngs == DialogResult.Cancel) return;
+        int w, h;
+        int[] palette, delays;
+        List<byte[]> frames;
+        try { cmpB.SimPlainFrames(out w, out h, out palette, out frames, out delays); }
+        catch (Exception ex) { Warn("The animation can't be saved: " + Util.Why(ex)); return; }
+        object token = cmpB.SimPicture;
+        bool alsoPngs = pngs == DialogResult.Yes;
+        simSaving = true;
+        cmpB.ShowMessage("Saving " + Path.GetFileName(dest) + "...");
+        ThreadPool.QueueUserWorkItem(delegate
+        {
+            string err = null;
+            int written = 0;
+            try { written = GifWriter.Save(dest, w, h, palette, frames, delays); }
+            catch (Exception ex) { err = Util.Why(ex); }
+            Util.Post(this, delegate
+            {
+                if (grid.Dir != null && grid.Covers(dir)) grid.Rescan();
+                string gifText = err == null ? Path.GetFileName(dest) + " (" + n + " frames)" : null;
+                if (alsoPngs) SimPngStep(token, dir, stem, 0, n, 0, gifText, err);
+                else SimAnimDone(dir, gifText, err, 0, n, null);
+            });
+        });
+    }
+
+    static string FrameDigits(int n) { return n >= 1000 ? "D4" : "D3"; }
+
+    // one frame's PNG with its screen effects: drawn here (the viewer draws it), saved and checked on a worker
+    void SimPngStep(object token, string dir, string stem, int i, int n, int saved, string gifText, string gifErr)
+    {
+        if (!beforeAfter || !baSim || cmpB.SimPicture != token)
+        {
+            SimAnimDone(dir, gifText, gifErr, saved, n, "the preview changed or was closed after " + saved + " of them");
+            return;
+        }
+        if (i >= n) { SimAnimDone(dir, gifText, gifErr, saved, n, null); return; }
+        Bitmap shot;
+        try { shot = cmpB.RenderFrameAsShown(i, 4); }
+        catch (Exception ex) { SimAnimDone(dir, gifText, gifErr, saved, n, Util.Why(ex)); return; }
+        if (shot == null) { SimAnimDone(dir, gifText, gifErr, saved, n, "frame " + (i + 1) + " could not be drawn"); return; }
+        string png = Util.UniquePath(dir, stem + " frame " + (i + 1).ToString(FrameDigits(n)), ".png");
+        cmpB.ShowMessage("Saving the frames as PNG: " + (i + 1) + " of " + n);
+        ThreadPool.QueueUserWorkItem(delegate
+        {
+            string err = null;
+            try { Exporter.SavePng(shot, png, false); }
+            catch (Exception ex) { err = Path.GetFileName(png) + ": " + Util.Why(ex); }
+            finally { shot.Dispose(); }
+            Util.Post(this, delegate
+            {
+                if (err != null) SimAnimDone(dir, gifText, gifErr, saved, n, err);
+                else SimPngStep(token, dir, stem, i + 1, n, saved + 1, gifText, gifErr);
+            });
+        });
+    }
+
+    // pngError: why the PNGs stopped (null: all saved, or none were asked for)
+    void SimAnimDone(string dir, string gifText, string gifErr, int pngs, int n, string pngError)
+    {
+        simSaving = false;
+        if (pngs > 0 && grid.Dir != null && grid.Covers(dir)) grid.Rescan();
+        var saved = new List<string>();
+        if (gifText != null) saved.Add(gifText);
+        if (pngs > 0) saved.Add(pngs + (pngs == 1 ? " frame PNG" : " frame PNGs"));
+        if (beforeAfter && baSim && saved.Count > 0) cmpB.ShowMessage("Saved " + string.Join(" and ", saved));
+        var errs = new List<string>();
+        if (gifErr != null) errs.Add("The GIF: " + gifErr);
+        if (pngError != null) errs.Add("The frame PNGs stopped: " + pngError);
+        if (errs.Count > 0) Warn((saved.Count > 0 ? "Saved " + string.Join(" and ", saved) + ", but:" : "Nothing was saved:") + "\n\n" + string.Join("\n", errs));
+    }
+
     // Fill the screen: the crop back in the middle
     void SimCentre()
     {
@@ -1659,6 +1769,7 @@ sealed partial class MainForm : Form
         if (ctrl && shift && k == Keys.C) { EndBeforeAfter(); return true; }
         if (k == Keys.Enter && !ctrl) { ToggleFull(); return true; }
         if (baSim && ctrl && !shift && !alt && k == Keys.S) { SimSave(); return true; }   // retro preview: save the files
+        if (baSim && ctrl && shift && !alt && k == Keys.S) { SimSaveAnim(); return true; }   // retro preview: save the animation
         if (ctrl || alt) return true;                      // Ctrl+C / Ctrl+S etc. do nothing here (presets are handled before)
         if (k == Keys.S || k == Keys.J || k == Keys.Z || k == Keys.Up || k == Keys.Down) return true;   // no slideshow, filmstrip or loupe
         if (baSim)

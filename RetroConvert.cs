@@ -1600,3 +1600,184 @@ static class RetroConvert
         return b;
     }
 }
+
+// ====================================================================== animated GIF (the retro preview's animation)
+
+// Writes the retro preview's converted animation as an animated GIF: the frames exactly as converted (no screen
+// effects), each pixel an index into one colour table of at most 256 colours (a converted frame has at most 16).
+// Frames that don't change are merged into the one before (their time added to it); the others store only the
+// rectangle that changed and are drawn over the frame before, as every GIF viewer does. Loops forever. The file is
+// written under a temporary name, read back with Windows' own GIF decoder and compared frame by frame, pixel by
+// pixel, before it is kept; dest is replaced only when it already exists (the user agreed in the Save dialog).
+// Any thread. Returns the number of GIF frames written.
+static class GifWriter
+{
+    public static int Save(string dest, int w, int h, int[] palette, List<byte[]> frames, int[] delaysMs)
+    {
+        if (w < 1 || h < 1 || w > 65535 || h > 65535) throw new ArgumentException("the picture size can't be stored in a GIF.");
+        if (palette.Length < 1 || palette.Length > 256) throw new ArgumentException("a GIF holds at most 256 colours.");
+        if (frames.Count == 0) throw new ArgumentException("there are no frames.");
+
+        // which frames are written, the rectangle each one changes, and how long each one shows
+        var keep = new List<int>();
+        var rects = new List<Rectangle>();
+        var times = new List<int>();
+        for (int f = 0; f < frames.Count; f++)
+        {
+            int ms = f < delaysMs.Length ? Math.Max(0, delaysMs[f]) : 100;
+            Rectangle r = f == 0 ? new Rectangle(0, 0, w, h) : Changed(frames[f - 1], frames[f], w, h);
+            if (r.IsEmpty) { times[times.Count - 1] += ms; continue; }
+            keep.Add(f); rects.Add(r); times.Add(ms);
+        }
+
+        int bits = 1;
+        while ((1 << bits) < palette.Length) bits++;
+        int minCode = Math.Max(2, bits);
+        var o = new MemoryStream();
+        o.Write(new byte[] { (byte)'G', (byte)'I', (byte)'F', (byte)'8', (byte)'9', (byte)'a' }, 0, 6);
+        Word(o, w); Word(o, h);
+        o.WriteByte((byte)(0x80 | ((bits - 1) << 4) | (bits - 1)));      // global colour table of 2^bits entries
+        o.WriteByte(0); o.WriteByte(0);
+        for (int i = 0; i < (1 << bits); i++)
+        {
+            int c = i < palette.Length ? palette[i] : 0;
+            o.WriteByte((byte)(c >> 16)); o.WriteByte((byte)(c >> 8)); o.WriteByte((byte)c);
+        }
+        // loop forever (the NETSCAPE2.0 extension every viewer understands)
+        o.WriteByte(0x21); o.WriteByte(0xFF); o.WriteByte(11);
+        foreach (char ch in "NETSCAPE2.0") o.WriteByte((byte)ch);
+        o.WriteByte(3); o.WriteByte(1); Word(o, 0); o.WriteByte(0);
+
+        for (int k = 0; k < keep.Count; k++)
+        {
+            Rectangle r = rects[k];
+            int cs = Math.Max(2, Math.Min(65535, (times[k] + 5) / 10));    // 1/100 s; 0 or 1 plays as 1/10 s in browsers
+            o.WriteByte(0x21); o.WriteByte(0xF9); o.WriteByte(4);
+            o.WriteByte(1 << 2);                                          // disposal 1: the next frame is drawn over this one
+            Word(o, cs); o.WriteByte(0); o.WriteByte(0);
+            o.WriteByte(0x2C);
+            Word(o, r.X); Word(o, r.Y); Word(o, r.Width); Word(o, r.Height);
+            o.WriteByte(0);
+            byte[] px = frames[keep[k]];
+            var part = new byte[r.Width * r.Height];
+            for (int y = 0; y < r.Height; y++) Array.Copy(px, (r.Y + y) * w + r.X, part, y * r.Width, r.Width);
+            o.WriteByte((byte)minCode);
+            Lzw(o, part, minCode);
+            o.WriteByte(0);
+        }
+        o.WriteByte(0x3B);
+        byte[] data = o.ToArray();
+
+        string tmp = dest + "." + Guid.NewGuid().ToString("N").Substring(0, 8) + ".tmp";
+        try
+        {
+            File.WriteAllBytes(tmp, data);
+            Verify(File.ReadAllBytes(tmp), w, h, palette, frames, keep);
+            if (File.Exists(dest)) File.Replace(tmp, dest, null);     // you agreed to replace it in the Save dialog
+            else File.Move(tmp, dest);
+        }
+        catch (Exception)
+        {
+            try { if (File.Exists(tmp)) File.Delete(tmp); } catch (Exception) { }
+            throw;
+        }
+        return keep.Count;
+    }
+
+    static void Word(Stream o, int v) { o.WriteByte((byte)v); o.WriteByte((byte)(v >> 8)); }
+
+    // the smallest rectangle holding every pixel that differs between a and b (empty if none)
+    static Rectangle Changed(byte[] a, byte[] b, int w, int h)
+    {
+        int x0 = w, y0 = h, x1 = -1, y1 = -1;
+        for (int y = 0; y < h; y++)
+        {
+            int row = y * w;
+            for (int x = 0; x < w; x++)
+                if (a[row + x] != b[row + x])
+                {
+                    if (x < x0) x0 = x;
+                    if (x > x1) x1 = x;
+                    if (y < y0) y0 = y;
+                    y1 = y;
+                }
+        }
+        return x1 < 0 ? Rectangle.Empty : new Rectangle(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+    }
+
+    // GIF's variable-length LZW, codes packed from the lowest bit up, in sub-blocks of at most 255 bytes
+    static void Lzw(Stream o, byte[] px, int minCode)
+    {
+        int clear = 1 << minCode, eoi = clear + 1;
+        int size = minCode + 1, next = eoi + 1;
+        var dict = new Dictionary<int, int>();
+        var block = new byte[255];
+        int fill = 0, acc = 0, nacc = 0;
+        Action<int> emit = delegate (int code)
+        {
+            acc |= code << nacc;
+            nacc += size;
+            while (nacc >= 8)
+            {
+                block[fill++] = (byte)acc;
+                acc >>= 8; nacc -= 8;
+                if (fill == 255) { o.WriteByte(255); o.Write(block, 0, 255); fill = 0; }
+            }
+        };
+        emit(clear);
+        int prefix = px[0];
+        for (int i = 1; i < px.Length; i++)
+        {
+            int k = px[i], key = (prefix << 8) | k, code;
+            if (dict.TryGetValue(key, out code)) { prefix = code; continue; }
+            emit(prefix);
+            if (next < 4096)
+            {
+                dict[key] = next++;
+                if (next > (1 << size) && size < 12) size++;        // the decoder widens its codes one entry later
+            }
+            else
+            {
+                emit(clear);
+                dict.Clear();
+                size = minCode + 1; next = eoi + 1;
+            }
+            prefix = k;
+        }
+        emit(prefix);
+        if (next == (1 << size) && size < 12) size++;              // the decoder has just added an entry and widened
+        emit(eoi);
+        if (nacc > 0) { block[fill++] = (byte)acc; if (fill == 255) { o.WriteByte(255); o.Write(block, 0, 255); fill = 0; } }
+        if (fill > 0) { o.WriteByte((byte)fill); o.Write(block, 0, fill); }
+    }
+
+    // read back with Windows' own decoder: every written frame must show exactly the frame it was made from
+    static void Verify(byte[] data, int w, int h, int[] palette, List<byte[]> frames, List<int> keep)
+    {
+        const string bad = "the new GIF did not read back correctly, so nothing was kept.";
+        using (var ms = new MemoryStream(data, false))
+        using (var img = (Bitmap)Image.FromStream(ms, false, false))
+        {
+            if (img.Width != w || img.Height != h) throw new IOException(bad);
+            int n = keep.Count == 1 ? 1 : img.GetFrameCount(System.Drawing.Imaging.FrameDimension.Time);
+            if (n != keep.Count) throw new IOException(bad);
+            var row = new int[w];
+            for (int k = 0; k < n; k++)
+            {
+                if (n > 1) img.SelectActiveFrame(System.Drawing.Imaging.FrameDimension.Time, k);
+                byte[] want = frames[keep[k]];
+                BitmapData d = img.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+                try
+                {
+                    for (int y = 0; y < h; y++)
+                    {
+                        Marshal.Copy(d.Scan0 + y * d.Stride, row, 0, w);
+                        for (int x = 0; x < w; x++)
+                            if ((row[x] | unchecked((int)0xFF000000)) != (palette[want[y * w + x]] | unchecked((int)0xFF000000))) throw new IOException(bad);
+                    }
+                }
+                finally { img.UnlockBits(d); }
+            }
+        }
+    }
+}

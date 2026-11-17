@@ -13,6 +13,12 @@ set SRC="%~dp0Program.cs" "%~dp0Util.cs" "%~dp0Imaging.cs" "%~dp0Thumbnails.cs" 
 "%CSC%" /nologo /target:winexe /optimize+ /platform:anycpu /out:"%~dp0RetroGleek.exe" /win32manifest:"%~dp0RetroGleek.manifest" %REFS% %SRC%
 if errorlevel 1 (echo. & echo Build FAILED. & goto end)
 echo. & echo Built RetroGleek.exe
+rem Its SHA-256 fingerprint, to put in the release notes (certutil is part of Windows). Each build gets a different
+rem one, because the compiler stamps the build time into the file.
+set "HASH="
+for /f "delims=" %%H in ('certutil -hashfile "%~dp0RetroGleek.exe" SHA256 ^| findstr /v ":"') do if not defined HASH set "HASH=%%H"
+if defined HASH (set "HASH=%HASH: =%") else (set "HASH=could not be worked out")
+echo SHA-256 of RetroGleek.exe: %HASH%
 "%CSC%" /nologo /target:exe /define:CLI /optimize+ /platform:anycpu /out:"%~dp0RetroGleekCli.exe" /win32manifest:"%~dp0RetroGleek.manifest" %REFS% %SRC%
 if errorlevel 1 (echo. & echo Building RetroGleekCli.exe FAILED.) else (echo Built RetroGleekCli.exe)
 :end

@@ -1,30 +1,89 @@
 # RetroGleek
 
-A small, fast, **fully offline** image browser and viewer for Windows, with built-in support for
-**retro-computer picture formats** (Amiga, Atari, Commodore 64, ZX Spectrum, MSX, Amstrad CPC and hundreds more)
-through [RECOIL](https://github.com/pfusik/recoil).
+![A Commodore 64 picture in RetroGleek, shown on a simulated CRT with scanlines and glow](images/title.jpg)
 
-![title](images/title.jpg)
+### See your retro pictures the way they were meant to be seen
 
-### See Your Retro Images the Way They Were Meant to Be Seen.
+Modern screens make classic pixel art look cold, flat and sterile. RetroGleek brings back the warmth and depth
+of the screens it was made for.
 
-Modern screens make classic pixel art look cold, flat, and sterile. RetroGleek brings back the warmth, depth, and unmistakable soul of vintage hardware.
-Powered by advanced video shaders, RetroGleek doesn't just slap a filter on your screen, it simulates the entire visual signal path. From the subtle quirks of specific cable outputs to the physical glass of classic CRT monitors, it automatically replicates:
+It doesn't just lay a filter over the picture: it recreates the path from the computer to your eyes, from the
+cable the signal travelled down to the phosphors and the curved glass in front of them. Press **A** and every
+picture gets the usual screen of its own computer:
 
-* Authentic scanlines & warm phosphor glow
-* True-to-era color blending
-* Detailed shadow masks & aperture grilles
+* Scanlines and a soft phosphor glow
+* Colours that blend as they did through S-Video and composite cables, so dithering melts into new shades
+* Aperture grilles, slot masks and dot masks
+* Gently curved glass with darker corners
 
-### More Than Just a Nostalgia Machine
+It opens hundreds of retro formats out of the box (Amiga, Atari, Commodore 64, ZX Spectrum, MSX, Amstrad CPC
+and many more, 567 file extensions in all) thanks to [RECOIL](https://github.com/pfusik/recoil).
 
-While RetroGleek shines at breathing life into vintage visuals, it also doubles as a fast, reliable image viewer for modern file types. It doesn't try to compete with bloated commercial software, instead, it stays lightweight, respects your privacy, and is built for 100% offline use.
+### Your photos on an 8-bit computer
+
+Press **Shift+O** on any photo to see it as a ZX Spectrum, C64, Amstrad CPC or MSX would have shown it, with
+each machine's real colour limits, then save it as a file the real computer can load. Animated GIFs play too.
+
+![A photo beside the same photo converted for the ZX Spectrum](images/convert.png)
+
+### More than a nostalgia machine
+
+RetroGleek is also a fast, dependable viewer for everyday photos: JPEG, PNG, WebP, HEIC, AVIF, camera RAW and
+more. It doesn't try to be a photo editor. It stays small, respects your privacy, and works 100% offline on
+Windows 10 and 11.
 
 It builds into **one small `.exe`** using the C# compiler that already ships with Windows: no SDK, no installer,
 no NuGet packages and no internet connection.
 
-![convert](images/convert.png)
+## Download
+
+**Windows 10 and 11.** Go to the [Releases](https://github.com/astroskiffle/Gleek3Deek/releases) page, download
+`RetroGleek.exe`, put it in a folder of its own (it keeps its settings next to itself) and double-click it.
+Nothing to install.
+
+RetroGleek isn't signed, so the first time Windows may say "Windows protected your PC": click **More info**, then
+**Run anyway**. The [Antivirus note](#antivirus-note) explains why some scanners are wary of new programs. Prefer
+to build it yourself from the source? See [Build](#build).
+
+To check your copy, compare its SHA-256 fingerprint with the one listed on the release. Open a Command Prompt in
+the folder with `RetroGleek.exe` and type:
+
+```
+certutil -hashfile RetroGleek.exe SHA256
+```
+
+The long string of letters and numbers it shows must match the release's exactly. (PowerShell's
+`Get-FileHash RetroGleek.exe` gives the same value in capital letters; capitals don't matter.) If it differs,
+don't run the file: download it again from the Releases page.
+
+## Quick start
+
+1. **Get it.** [Download](#download) `RetroGleek.exe`, or put all the source files in one folder and double-click
+   **`build.bat`**, which makes `RetroGleek.exe` next to them in a few seconds (see [Build](#build)).
+2. **Open a folder.** Start `RetroGleek.exe` and click a folder in the tree on the left, type a path in the address bar
+   (**Ctrl+L**), or drag a folder onto the window.
+3. **Look through it.** Arrow keys move, **Enter** or a double-click opens a picture, **Left / Right** step through
+   the folder, **Esc** goes back. Type in the **Filter** box (**Ctrl+F**) to narrow the list; drag the **Size** slider
+   for bigger thumbnails.
+4. **Retro pictures.** Amiga, C64, ZX Spectrum, Atari and hundreds of other formats are listed with everything else
+   (**F8** hides them). In the viewer, **A** gives each picture the screen of its own computer (scanlines, phosphor
+   mask, TV signal), **O** turns the effects off and on, and **Shift+O** shows the picture with and without them side
+   by side.
+5. **A photo on an 8-bit computer.** Open any photo and press **Shift+O**: the right side shows it as it might look on
+   a ZX Spectrum, C64, Amstrad CPC or MSX. **Q** changes the computer, **D** the dithering, **Shift+F** fills the
+   screen, and **Ctrl+S** saves the computer's own file plus a PNG to share. Animated GIFs play too.
+6. **Keep the best.** **Alt+1** .. **Alt+5** rate a picture, **Shift+1** .. **Shift+5** give it a colour label, **X**
+   tags it; the **Show** pull-down then lists only those.
+
+Everything is in the **menu bar**, with its shortcut, and **F1** lists every key on one page. Nothing is ever
+overwritten without asking, and RetroGleek never goes online.
 
 ## Features
+
+| | |
+|---|---|
+| ![The browser: folder tree, thumbnails of a folder of retro pictures, and the preview pane](images/browser.png) | ![The details list with platform, dimensions, colours, ratings and labels](images/details.png) |
+| *Browse folders of modern and retro pictures* | *Sort, rate, tag and audit a collection* |
 
 - **Folder tree + thumbnail grid.** The tree is lazy-loaded; folders are scanned and thumbnails are decoded on
   background threads, so large folders stay responsive.
@@ -78,7 +137,9 @@ Requirements: Windows 10 or 11 (which includes .NET Framework 4.x and its C# com
 
 1. Keep all the `.cs` files, `RetroGleek.manifest` and `build.bat` together in one folder.
 2. Double-click **`build.bat`**. It produces `RetroGleek.exe` next to them, and `RetroGleekCli.exe`, the optional
-   console companion for command-line audits (you only need it if you use the command line).
+   console companion for command-line audits (you only need it if you use the command line). It ends by showing
+   the SHA-256 fingerprint of `RetroGleek.exe`, for the release notes when you publish a copy. Every build has a
+   different fingerprint, because the compiler stamps the build time into the file.
 
 The source is written in C# 5 so that the compiler built into Windows can build it.
 
@@ -155,7 +216,7 @@ never on your files.
 | Screen effects presets | Effects > Save these effects as a preset... saves the current TV aspect, scanlines, mask, video signal, glow and curvature under a name (up to 9). Use one with `Ctrl+1` .. `Ctrl+9` (top row or keypad) or from the Effects menu; Effects > Delete a preset removes one. A preset also ends automatic mode. Saving with automatic on suggests the computer's name. Presets are written to settings.ini straight away |
 | All screen effects off / on | `O` (or Effects > Show screen effects) turns True TV aspect, scanlines, mask, video signal, glow and curvature off together, to compare with the picture as decoded; `O` again, or changing any effect, brings them back. Each effect keeps its own setting. Every start shows the effects |
 | Before / after (retro pictures) | `Shift+O` (or Effects > Before / after) shows the picture twice, side by side: on the left as decoded, with no screen effects at all, on the right with your screen effects (or the automatic ones, and curvature if it is on). Works in the viewer, and in the browser with one retro picture selected. Both sides fit the window and zoom and pan together; moving to the next or previous picture (keys or mouse wheel) moves both. Effect keys (`T`, `K`, `M`, `C`, `W`, `U`, `O`, `A`) and presets (`Ctrl+1` .. `Ctrl+9`) change the right side only, and what you set there stays when you close it. Each side has half the window, so pictures are smaller than in the viewer, and scanlines (shown from about 300%) may not appear on smaller screens. `Shift+O` or Esc closes it and goes back to where you were. Display only |
-| Retro preview (photos and other modern pictures) | `Shift+O` on a photo, PNG, WebP or any other non-retro picture (or Effects > Retro preview), in the viewer or in the browser with one picture selected. Shows the picture twice, side by side: on the left as it is, on the right as it might look on an **8-bit computer**: **ZX Spectrum**, **Commodore 64** (multicolour or hires), **Amstrad CPC** (mode 0 or mode 1) or **MSX**, with that machine's resolution, colours and colour rules, shown with the screen effects. The picture is converted exactly as Convert to a retro format would do it, then read back by RECOIL, so True TV aspect, scanlines, mask, video signal, glow and curvature work on it as on a real retro file; if you have no screen effects of your own, the automatic ones for that computer are used. Choose with the bar above the right picture, the Effects menu, or the keys: `Q` / `Shift+Q` the computer, `D` / `Shift+D` the dithering (none, ordered pattern, error diffusion), `Shift+F` whole picture with borders or cropped to fill the screen. Your choices are remembered next time. With the whole picture, both sides show it at the same height and zoom and pan together. With Fill the screen, the left side shows the whole picture with a frame around the part the computer's screen shows: drag it to choose that part, and the right side is converted again when you let go (Centre the crop puts it back in the middle; the position stays as you step through pictures); moving to the next or previous picture moves both. Machines with larger colour spaces (Atari ST, Amiga, MSX2 Screen 8) are left out: they show a photo with little loss. The preview itself writes nothing. **Save...** next to the computer (or `Ctrl+S`, or Effects > Retro preview: save) makes two new files: the computer's own file (ZX Spectrum `.scr`, C64 Koala `.koa` or Doodle `.dd`, Amstrad CPC `.scr`, MSX `.sc2`), converted exactly as previewed (computer, dithering, framing and crop) and without screen effects, checked by RECOIL like every conversion; and beside it a lossless PNG of the screen as the right side shows it, with its screen effects (curvature too, if it is on), each of the computer's original lines 4 pixels high, ready to share (`name - ZX Spectrum screen.png`). The Save dialog asks before replacing a file; the PNG always gets a free name; the original picture is never changed. **Animated GIFs and WebPs play** in the retro preview: the frames are converted in the background and the animation plays as they are ready (the first time through it may wait for a frame; the info bar shows how many are converted), at the file's own frame times. Both sides show the same frame; `P` pauses, `,` / `.` step. Every frame keeps the same colours, so they don't jump: the Amstrad CPC's 16 or 4 colours and the C64 multicolour's background are chosen once, from frames spread over the whole animation; the other computers have fixed colours. Ordered dithering suits animations best: error diffusion makes moving areas shimmer. The converted frames are kept in memory up to about 384 MB, beyond which the rest are left out. Save pauses the animation and saves the frame shown (the PNG's name gives the frame number). This shows what each frame would look like on the computer, not what it could play: an 8-bit computer couldn't redraw a whole screen that fast. `Shift+O` or Esc closes it |
+| Retro preview (photos and other modern pictures) | `Shift+O` on a photo, PNG, WebP or any other non-retro picture (or Effects > Retro preview), in the viewer or in the browser with one picture selected. Shows the picture twice, side by side: on the left as it is, on the right as it might look on an **8-bit computer**: **ZX Spectrum**, **Commodore 64** (multicolour or hires), **Amstrad CPC** (mode 0 or mode 1) or **MSX**, with that machine's resolution, colours and colour rules, shown with the screen effects. The picture is converted exactly as Convert to a retro format would do it, then read back by RECOIL, so True TV aspect, scanlines, mask, video signal, glow and curvature work on it as on a real retro file; if you have no screen effects of your own, the automatic ones for that computer are used. Choose with the bar above the right picture, the Effects menu, or the keys: `Q` / `Shift+Q` the computer, `D` / `Shift+D` the dithering (none, ordered pattern, error diffusion), `Shift+F` whole picture with borders or cropped to fill the screen. Your choices are remembered next time. With the whole picture, both sides show it at the same height and zoom and pan together. With Fill the screen, the left side shows the whole picture with a frame around the part the computer's screen shows: drag it to choose that part, and the right side is converted again when you let go (Centre the crop puts it back in the middle; the position stays as you step through pictures); moving to the next or previous picture moves both. Machines with larger colour spaces (Atari ST, Amiga, MSX2 Screen 8) are left out: they show a photo with little loss. The preview itself writes nothing. **Save...** next to the computer (or `Ctrl+S`, or Effects > Retro preview: save) makes two new files: the computer's own file (ZX Spectrum `.scr`, C64 Koala `.koa` or Doodle `.dd`, Amstrad CPC `.scr`, MSX `.sc2`), converted exactly as previewed (computer, dithering, framing and crop) and without screen effects, checked by RECOIL like every conversion; and beside it a lossless PNG of the screen as the right side shows it, with its screen effects (curvature too, if it is on), each of the computer's original lines 4 pixels high, ready to share (`name - ZX Spectrum screen.png`). The Save dialog asks before replacing a file; the PNG always gets a free name; the original picture is never changed. **Animated GIFs and WebPs play** in the retro preview: the frames are converted in the background and the animation plays as they are ready (the first time through it may wait for a frame; the info bar shows how many are converted), at the file's own frame times. Both sides show the same frame; `P` pauses, `,` / `.` step. Every frame keeps the same colours, so they don't jump: the Amstrad CPC's 16 or 4 colours and the C64 multicolour's background are chosen once, from frames spread over the whole animation; the other computers have fixed colours. Ordered dithering suits animations best: error diffusion makes moving areas shimmer. The converted frames are kept in memory up to about 384 MB, beyond which the rest are left out. Save pauses the animation and saves the frame shown (the PNG's name gives the frame number). **Ctrl+Shift+S** (or Effects > Retro preview: save the animation) saves the whole animation as an animated GIF of the converted frames, without screen effects (a GIF holds at most 256 colours, and the effects make thousands), looping, at the file's frame times; it is read back with Windows' own GIF decoder and checked frame by frame before it is kept. If you like, every frame is also saved as a PNG with its screen effects (`name frame 001.png` ...), for sharing or for making a video; nothing is overwritten. It waits until every frame is converted. This shows what each frame would look like on the computer, not what it could play: an 8-bit computer couldn't redraw a whole screen that fast. `Shift+O` or Esc closes it |
 | Phosphor mask (retro pictures) | `M` cycles off / aperture grille / slot mask / dot mask (or Effects > Phosphor mask). The fine pattern of red, green and blue phosphors on a CRT: aperture grille is the stripes of a Sony Trinitron, slot mask the staggered slots of most TVs and monitors such as the Commodore 1084S, dot mask a fine pattern of dots. Drawn in screen pixels (twice as wide on very high-resolution screens), so it stays still while you pan. Shown from 200%; works with or without scanlines. Hidden while the picture is turned on its side. Display only. Remembered next time |
 | Copy the picture to the clipboard | Ctrl+C (as you see it: rotation and flips included) |
 | Delete the picture (Recycle Bin) | Del, then the next picture is shown |
@@ -297,6 +358,7 @@ the source and build it yourself with `build.bat`.
 | `build.bat` | One-click build using the compiler included in Windows (`RetroGleek.exe` and the console companion `RetroGleekCli.exe`) |
 | `LICENSE` | MIT License for RetroGleek's own code |
 | `THIRD-PARTY-NOTICES.txt` | RECOIL's MIT license and a description of the modifications |
+| `images/` | The pictures in this README (not needed to build) |
 | `tools/downgrade_recoil.py` | Regenerates `RECOIL.cs` from a RECOIL checkout (needs the `fut` translator) |
 
 ## License
