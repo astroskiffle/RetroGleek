@@ -373,6 +373,7 @@ sealed partial class MainForm : Form
 
     void SavePrefs()
     {
+        if (beforeAfter) BaKeepEffects();                  // closing while in before / after keeps what you set there
         Rectangle b; bool max;
         if (full) { b = oldBounds; max = oldState == FormWindowState.Maximized; }
         else { b = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds; max = WindowState == FormWindowState.Maximized; }
@@ -1133,8 +1134,17 @@ sealed partial class MainForm : Form
         comparePanel.Controls.Add(cmpA, 0, 0);
         comparePanel.Controls.Add(cmpB, 1, 0);
         // each follows the other's zoom and position
-        cmpA.ViewChanged += delegate { double z, x, y; int fm; cmpA.GetView(out z, out x, out y, out fm); cmpB.SetView(z, x, y, fm); };
-        cmpB.ViewChanged += delegate { double z, x, y; int fm; cmpB.GetView(out z, out x, out y, out fm); cmpA.SetView(z, x, y, fm); };
+        // (before / after: the right side leads, and the left one always takes its exact scale, see BaMatch)
+        cmpA.ViewChanged += delegate { double z, x, y; int fm; cmpA.GetView(out z, out x, out y, out fm); cmpB.SetView(z, x, y, fm); BaMatch(); };
+        cmpB.ViewChanged += delegate
+        {
+            if (beforeAfter) { BaMatch(); return; }
+            double z, x, y; int fm; cmpB.GetView(out z, out x, out y, out fm); cmpA.SetView(z, x, y, fm);
+        };
+        // before / after: whichever side moves to another picture (keys, wheel), the other follows
+        cmpA.ImageChanged += delegate (string p, int i) { BaFollow(cmpB, p); BaMatch(); };
+        cmpB.ImageChanged += delegate (string p, int i) { BaFollow(cmpA, p); BaMatch(); };
+        cmpB.Resize += delegate { if (beforeAfter) BeginInvoke(new MethodInvoker(BaMatch)); };   // after the right side has fitted itself again
         foreach (Control c in new Control[] { cmpA, cmpB })
         {
             c.AllowDrop = true;
@@ -1170,6 +1180,7 @@ sealed partial class MainForm : Form
 
     void EndCompare()
     {
+        if (beforeAfter) { EndBeforeAfter(); return; }
         if (!comparing) return;
         comparing = false;
         comparePanel.Visible = false;
@@ -1180,6 +1191,7 @@ sealed partial class MainForm : Form
     // keys while comparing: zoom keys go to the left picture (the right one follows), the rest to both
     bool CompareKey(Keys keyData)
     {
+        if (beforeAfter) return BeforeAfterKey(keyData);
         Keys k = keyData & Keys.KeyCode;
         bool ctrl = (keyData & Keys.Control) != 0, shift = (keyData & Keys.Shift) != 0;
         if (k == Keys.Escape) { if (full) ToggleFull(); else EndCompare(); return true; }
@@ -1194,6 +1206,155 @@ sealed partial class MainForm : Form
         if (zoomKey) return cmpA.HandleKey(keyData);
         bool used = cmpA.HandleKey(keyData);
         used |= cmpB.HandleKey(keyData);
+        return used;
+    }
+
+    // ================================================================ before / after (Shift+O)
+
+    // One retro picture twice, side by side: on the left as decoded (no screen effects at all), on the right with
+    // the screen effects you have chosen (or the automatic ones). Built on the compare view: zoom and panning are
+    // linked, both sides fit the window, and moving to another picture moves both. Effect keys and presets change
+    // the right side only, and what you set there is kept when you close it. Display only, like every effect.
+    bool beforeAfter, baFromViewer;
+    List<string> baList;
+    string baPath;
+
+    static bool RetroFile(string p) { return p != null && !Util.IsNative(p) && Retro.Claims(p); }
+
+    bool CanBeforeAfter()
+    {
+        if (comparing) return false;
+        if (viewing) return canvas.Platform != null;
+        List<int> sel = grid.SelectedIndices();
+        return sel.Count == 1 && !grid.Items[sel[0]].Offline && RetroFile(grid.Items[sel[0]].Path);
+    }
+
+    void StartBeforeAfter()
+    {
+        if (comparing) return;
+        string path;
+        if (viewing)
+        {
+            if (canvas.Platform == null) { canvas.ShowMessage("Before / after is for retro pictures (RECOIL formats)"); return; }
+            path = canvas.CurrentPath;
+        }
+        else
+        {
+            List<int> sel = grid.SelectedIndices();
+            if (sel.Count != 1 || !RetroFile(grid.Items[sel[0]].Path))
+            {
+                status.Text = "  Before / after (Shift+O): select one retro picture, or press Shift+O in the viewer";
+                return;
+            }
+            path = grid.Items[sel[0]].Path;
+        }
+        if (path == null) return;
+        baFromViewer = viewing;
+        baList = new List<string>(grid.Paths);             // a copy: a refresh of the folder must not change it under us
+        int at = baList.FindIndex(x => string.Equals(x, path, StringComparison.OrdinalIgnoreCase));
+        if (at < 0) { baList = new List<string> { path }; at = 0; }
+        baPath = path;
+        comparing = true;
+        beforeAfter = true;
+        SuspendLayout();
+        browse.Visible = false; status.Visible = false; canvas.Visible = false;
+        cmpA.Visible = true; cmpB.Visible = true;
+        comparePanel.Visible = true;
+        ResumeLayout(true);
+        cmpA.UseEffects(canvas.ManualEffects);
+        cmpA.AutoEffects = false;
+        cmpA.EffectsOff = true;                            // before: the picture as decoded
+        cmpB.UseEffects(canvas.ManualEffects);
+        cmpB.AutoEffects = canvas.AutoEffects;             // after: your effects, or the automatic ones
+        cmpB.EffectsOff = false;
+        foreach (Canvas c in new[] { cmpA, cmpB }) { c.FitLock = true; c.PixMode = canvas.PixMode; c.Checker = canvas.Checker; c.InfoOn = canvas.InfoOn; }
+        cmpA.Open(baList, at);
+        cmpB.Open(baList, at);
+        cmpA.ShowMessage("Before: as decoded, no screen effects");
+        cmpB.ShowMessage("After: " + (cmpB.AutoEffects ? "automatic screen effects" : "with your screen effects") + "   (Shift+O or Esc closes)");
+        BaTitle();
+        cmpB.Focus();
+    }
+
+    void BaTitle() { Text = "Before / after: " + Path.GetFileName(baPath) + " - RetroGleek"; }
+
+    // one side moved to another picture: the other follows
+    void BaFollow(Canvas other, string p)
+    {
+        if (!beforeAfter || p == null || string.Equals(p, baPath, StringComparison.OrdinalIgnoreCase)) return;
+        baPath = p;
+        int i = baList.FindIndex(x => string.Equals(x, p, StringComparison.OrdinalIgnoreCase));
+        if (i >= 0) other.Open(baList, i); else other.ShowSingle(p);
+        BaTitle();
+    }
+
+    // Before / after: the left side always shows the picture at the right side's scale and position, so both are the
+    // same size on screen. Fitting on its own, the left side would be larger whenever scanlines make the right side
+    // fit at a whole-number size (300% beside 200%, say). True TV aspect can still make them differ slightly in width.
+    void BaMatch()
+    {
+        if (!beforeAfter) return;
+        double z, x, y; int fm;
+        cmpB.GetView(out z, out x, out y, out fm);
+        cmpA.SetView(z, x, y, 0);
+    }
+
+    // what you set on the right side becomes the viewer's own settings (also when RetroGleek closes meanwhile)
+    void BaKeepEffects()
+    {
+        canvas.UseEffects(cmpB.ManualEffects);
+        canvas.AutoEffects = cmpB.AutoEffects;
+        canvas.EffectsOff = cmpB.EffectsOff;
+    }
+
+    void EndBeforeAfter()
+    {
+        if (!beforeAfter) return;
+        string shown = baPath;
+        BaKeepEffects();
+        beforeAfter = false;
+        comparing = false;
+        comparePanel.Visible = false;
+        cmpA.Release(); cmpB.Release();
+        cmpA.FitLock = false; cmpB.FitLock = false;        // side-by-side compare keeps its own behaviour
+        cmpA.EffectsOff = false;
+        baList = null; baPath = null;
+        int i = shown == null ? -1 : grid.IndexOfPath(shown, -1);
+        if (baFromViewer && shown != null && File.Exists(shown))
+        {
+            if (i >= 0) canvas.Open(grid.Paths, i); else canvas.ShowSingle(shown);
+            SetViewing(true);
+            Text = Path.GetFileName(shown) + " - RetroGleek";
+        }
+        else
+        {
+            SetViewing(false);
+            if (i >= 0) grid.SelectOnly(i);
+        }
+    }
+
+    // keys in before / after: effects go to the right side only; moving and zooming to one side (the other follows);
+    // turning, flipping and display options to both
+    bool BeforeAfterKey(Keys keyData)
+    {
+        Keys k = keyData & Keys.KeyCode;
+        bool ctrl = (keyData & Keys.Control) != 0, shift = (keyData & Keys.Shift) != 0, alt = (keyData & Keys.Alt) != 0;
+        if (k == Keys.Escape) { if (full) ToggleFull(); else EndBeforeAfter(); return true; }
+        if (k == Keys.O && shift && !ctrl && !alt) { EndBeforeAfter(); return true; }
+        if (ctrl && shift && k == Keys.C) { EndBeforeAfter(); return true; }
+        if (k == Keys.Enter && !ctrl) { ToggleFull(); return true; }
+        if (ctrl || alt) return true;                      // Ctrl+C / Ctrl+S etc. do nothing here (presets are handled before)
+        if (k == Keys.S || k == Keys.J || k == Keys.Z || k == Keys.Up || k == Keys.Down) return true;   // no slideshow, filmstrip or loupe
+        bool effectKey = k == Keys.T || k == Keys.K || k == Keys.M || k == Keys.C || k == Keys.W || k == Keys.U || k == Keys.O || k == Keys.A;
+        if (effectKey) { bool fx = cmpB.HandleKey(keyData); BaMatch(); return fx; }   // scanlines on / off can change the fit
+        bool oneSide = k == Keys.Left || k == Keys.Right || k == Keys.PageUp || k == Keys.PageDown || k == Keys.Space ||
+                       k == Keys.Back || k == Keys.Home || k == Keys.End ||
+                       k == Keys.Add || k == Keys.Subtract || k == Keys.Oemplus || k == Keys.OemMinus ||
+                       (k >= Keys.D0 && k <= Keys.D9) || (k >= Keys.NumPad0 && k <= Keys.NumPad9);
+        if (oneSide) { bool one = cmpB.HandleKey(keyData); BaMatch(); return one; }   // the left side follows (picture: BaFollow)
+        bool used = cmpA.HandleKey(keyData);
+        used |= cmpB.HandleKey(keyData);
+        BaMatch();                                         // F, R, L ... fit each side again: the left one takes the right one's scale
         return used;
     }
 

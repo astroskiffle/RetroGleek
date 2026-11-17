@@ -1615,6 +1615,9 @@ partial class MainForm
             "  H / V                   flip left-right / top-bottom",
             "  B                       checkerboard behind transparent pictures",
             "  O                       screen effects off / on (compare with the picture as decoded)",
+            "  Shift+O                 before / after: the picture as decoded beside it with its screen effects",
+            "                          (retro; also from the browser with one picture selected; effect keys and",
+            "                          presets change the right side; Shift+O or Esc closes)",
             "  A                       automatic effects: the usual screen of each picture's computer (A again: your own)",
             "  Ctrl+1 .. Ctrl+9        use a saved screen effects preset (Effects > Save these effects as a preset)",
             "  T                       True TV aspect: pixels shaped as on the original PAL / NTSC screen (retro)",
@@ -1814,7 +1817,8 @@ partial class MainForm
     }
 
     // the viewer(s) showing pictures right now: both halves while comparing
-    IEnumerable<Canvas> EffectTargets() { return comparing ? new[] { cmpA, cmpB } : new[] { canvas }; }
+    // (before / after: only the right side; the left one always shows the picture as decoded)
+    IEnumerable<Canvas> EffectTargets() { return beforeAfter ? new[] { cmpB } : comparing ? new[] { cmpA, cmpB } : new[] { canvas }; }
 
     void ApplyPreset(int i)
     {
@@ -1826,14 +1830,15 @@ partial class MainForm
             return;
         }
         canvas.UseEffects(p);
-        if (comparing) { cmpA.UseEffects(p); cmpB.UseEffects(p); }
+        if (beforeAfter) { cmpB.UseEffects(p); BaMatch(); }
+        else if (comparing) { cmpA.UseEffects(p); cmpB.UseEffects(p); }
         foreach (Canvas c in EffectTargets()) c.ShowMessage("Preset " + (i + 1) + ": " + p.Name + "  (" + p.Describe() + ")");
         if (!viewing && !comparing) status.Text = "  Screen effects preset " + (i + 1) + ": " + p.Name + "  (" + p.Describe() + ")";
     }
 
     void SavePreset()
     {
-        Canvas src = comparing ? cmpA : canvas;
+        Canvas src = beforeAfter ? cmpB : comparing ? cmpA : canvas;
         EffectSet e = src.CurrentEffects;
         EffectSet a = src.AutoChoice;
         int free = Array.IndexOf(presets, null);
@@ -2083,6 +2088,10 @@ partial class MainForm
         // ---- Effects: screen effects for retro pictures (display only; remembered in settings.ini)
         ToolStripMenuItem effects = MenuTop("Effe&cts");
         MenuEntry(effects, "&Show screen effects", "O", delegate { canvas.EffectsOff = !canvas.EffectsOff; }, null, delegate { return !canvas.EffectsOff; });
+        MenuEntry(effects, "&Before / after: plain and with effects, side by side", "Shift+O",
+                  delegate { if (beforeAfter) EndBeforeAfter(); else StartBeforeAfter(); }, delegate { return beforeAfter || CanBeforeAfter(); }, delegate { return beforeAfter; });
+        LastEntry.Text = delegate { return beforeAfter ? "Close &before / after" : "&Before / after: plain and with effects, side by side"; };
+        LastEntry.InCompare = true;
         MenuEntry(effects, "&Automatic: the usual screen of each picture's computer", "A", delegate { canvas.ToggleAuto(); }, null, delegate { return canvas.AutoEffects; });
         LastEntry.Text = delegate
         {
@@ -2303,6 +2312,7 @@ partial class MainForm
         int preset = PresetKey(keyData);
         if (preset > 0) { ApplyPreset(preset - 1); return true; }
         int markKind, markValue = MarkKey(keyData, out markKind);
+        if (k == Keys.O && shift && !ctrl && !alt && !typing && !comparing && (viewing || CanBeforeAfter())) { StartBeforeAfter(); return true; }   // before / after
         if (comparing) return markKind != 0 || CompareKey(keyData);       // marks are given in the browser or the viewer
         if (ctrl && shift && k == Keys.C && !viewing) { StartCompare(); return true; }
         if (ctrl && shift && k == Keys.S) { DoExportFrames(); return true; }
