@@ -1232,6 +1232,49 @@ partial class MainForm
         }
     }
 
+    // ---------------------------------------------------------------- finding duplicates (Tools > Find duplicates)
+
+    // the results window, while it is open (only one at a time)
+    DupForm dupForm;
+
+    // Tools > Find duplicates: asks where and what to look for, then shows the groups found in a window of its own
+    // (Duplicates.cs). Nothing changes until you tag the pictures or move them to the Recycle Bin there.
+    void DoFindDuplicates()
+    {
+        if (dupForm != null && !dupForm.IsDisposed) { dupForm.Activate(); return; }
+        DupOptions o = DupFinder.Ask(this, grid.Dir, DarkTitle);
+        if (o == null) return;
+        var f = new DupForm(o, DarkTitle);
+        f.OpenPicture = delegate (string p)
+        {
+            if (!File.Exists(p)) { Warn("That picture isn't there any more:\n" + p); return; }
+            if (comparing) EndCompare();
+            OpenImage(p);
+            Activate();
+        };
+        f.ShowInFolder = delegate (string p)
+        {
+            if (comparing) EndCompare();
+            if (viewing) SetViewing(false);
+            string d = Path.GetDirectoryName(p);
+            if (!Directory.Exists(d)) return;
+            ShowFolder(d, File.Exists(p) ? p : null, -1, false);
+            RevealInTree(d);
+            Activate();
+        };
+        f.Compare = delegate (string a, string b)
+        {
+            if (!File.Exists(a) || !File.Exists(b)) { Warn("One of those pictures isn't there any more."); return; }
+            ComparePaths(a, b);
+            Activate();
+        };
+        f.MarksChanged = delegate { grid.MarksChanged(); canvas.MarksChanged(); UpdatePreview(); if (!viewing && !comparing) UpdateStatus(); };
+        f.FilesDeleted = delegate (List<string> gone) { if (grid.Dir != null) grid.Rescan(); };
+        f.FormClosed += delegate { dupForm = null; };
+        dupForm = f;
+        f.Show();
+    }
+
     // ---------------------------------------------------------------- star ratings into the files (changes files, always asks)
 
     bool ratingBusy;
@@ -1588,6 +1631,9 @@ partial class MainForm
             "                          ZX Spectrum .scr, C64 Koala .koa / Doodle .dd, Amstrad CPC .scr (mode 0 / 1),",
             "                          Atari ST Degas .pi1, Amiga IFF .iff, MSX .sc2 / .sc8;",
             "                          new files only, each checked with RECOIL (also in the viewer)",
+            "  Tools > Find duplicates   identical files, the same picture in other files (also retro screenshots",
+            "                          enlarged or with a border) and similar pictures, across folders; tag the extra",
+            "                          copies or move them to the Recycle Bin (asks first; one of each group is kept)",
             "  Ctrl+Shift+A            folder audit: an offline HTML report of every picture file in this folder",
             "                          (platform, type, size, colours, duplicates, files that could not be opened)",
             "  Ctrl+C / Ctrl+X / Ctrl+V   copy / cut / paste files (cut + paste moves them; works with Explorer too)",
@@ -2249,6 +2295,8 @@ partial class MainForm
             delegate { return grid.Dir != null && !auditBusy; }, null);
         MenuEntry(tools, "Folder audit report, &no thumbnails (smaller)...", "", delegate { DoAudit(false); },
             delegate { return grid.Dir != null && !auditBusy; }, null);
+        MenuEntry(tools, "Find &duplicates (also similar pictures)...", "", delegate { DoFindDuplicates(); }, null, null);
+        LastEntry.InCompare = true;
         MenuEntry(tools, "&Contact sheet (lossless PNG)...", "", delegate { DoContactSheet(); },
             delegate { return !viewing && !sheetBusy && grid.SelectedIndices().Count > 0; }, null);
         MenuKey(tools, "Con&vert to a retro format...", "Ctrl+Shift+E", Keys.Control | Keys.Shift | Keys.E,

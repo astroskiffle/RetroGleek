@@ -106,6 +106,8 @@
 //   RetroConvert.cs    converting pictures into retro formats (Spectrum .scr, C64 Koala .koa and Doodle .dd,
 //                      Amstrad CPC .scr mode 0 and 1, Atari ST Degas .pi1, Amiga IFF .iff, MSX Screen 2 .sc2 and
 //                      Screen 8 .sc8), every file checked by RECOIL
+//   Duplicates.cs      finding identical, same and similar pictures across folders (Tools > Find duplicates):
+//                      file hashes, pixel hashes (retro screenshots trimmed and reduced), dHash / pHash fingerprints
 //   RECOIL.cs          generated RECOIL library (never edit by hand; see tools/downgrade_recoil.py)
 
 using System;

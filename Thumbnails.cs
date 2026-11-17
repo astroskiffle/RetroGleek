@@ -150,7 +150,7 @@ sealed class ThumbService
         }
     }
 
-    static ThumbResult Make(string path, int size)
+    internal static ThumbResult Make(string path, int size)
     {
         if ((File.GetAttributes(path) & Util.CloudMask) != 0)
             return new ThumbResult { Error = "Cloud placeholder: the file is not stored on this PC." };

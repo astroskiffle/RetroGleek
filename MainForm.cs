@@ -1480,7 +1480,14 @@ sealed partial class MainForm : Form
     {
         if (!CanCompare()) return;
         List<int> sel = grid.SelectedIndices();
-        string a = grid.Items[sel[0]].Path, b = grid.Items[sel[1]].Path;
+        ComparePaths(grid.Items[sel[0]].Path, grid.Items[sel[1]].Path);
+    }
+
+    // two pictures side by side (from the browser's selection, or from Find duplicates)
+    void ComparePaths(string a, string b)
+    {
+        if (beforeAfter) EndBeforeAfter(); else if (comparing) EndCompare();
+        if (viewing) SetViewing(false);
         comparing = true;
         SuspendLayout();
         browse.Visible = false; status.Visible = false; canvas.Visible = false;

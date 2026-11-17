@@ -9,7 +9,7 @@ of the screens it was made for.
 
 It doesn't just lay a filter over the picture: it recreates the path from the computer to your eyes, from the
 cable the signal travelled down to the phosphors and the curved glass in front of them. Press **A** and every
-picture gets the screen of its own computer:
+picture gets the usual screen of its own computer:
 
 * Scanlines and a soft phosphor glow
 * Colours that blend as they did through S-Video and composite cables, so dithering melts into new shades
@@ -24,6 +24,8 @@ and many more, 567 file extensions in all) thanks to [RECOIL](https://github.com
 Press **Shift+O** on any photo to see it as a ZX Spectrum, C64, Amstrad CPC or MSX would have shown it, with
 each machine's real colour limits, then save it as a file the real computer can load. Animated GIFs play too.
 
+![A photo beside the same photo converted for the ZX Spectrum](images/convert.png)
+
 ### More than a nostalgia machine
 
 RetroGleek is also a fast, dependable viewer for everyday photos: JPEG, PNG, WebP, HEIC, AVIF, camera RAW and
@@ -32,8 +34,6 @@ Windows 10 and 11.
 
 It builds into **one small `.exe`** using the C# compiler that already ships with Windows: no SDK, no installer,
 no NuGet packages and no internet connection.
-
-![A photo beside the same photo converted for the ZX Spectrum](images/convert.png)
 
 ## Download
 
@@ -102,6 +102,9 @@ overwritten without asking, and RetroGleek never goes online.
   retro file extensions (RECOIL).
 - **Save as PNG (lossless).** One picture or a whole selection; every PNG is read back and compared pixel by pixel
   before it is kept.
+- **Find duplicates** across folders: identical files, the same picture saved in another file (also emulator
+  screenshots of retro pictures, enlarged or with a border), and similar pictures (resized, saved again, turned).
+  Nothing is changed until you choose: tag the extra copies, or move them to the Recycle Bin.
 - **File management.** Rename, cut / copy / paste, drag-and-drop to move or copy, delete to the Recycle Bin, new folder.
   Nothing is ever overwritten: a name that is already taken gets a number added.
 - **Menu bar** with every command and its shortcut.
@@ -173,6 +176,7 @@ fullscreen.
 | Convert to a retro format | Select pictures (or open one in the viewer), then Ctrl+Shift+E (or Tools > Convert to a retro format). Makes a new file for each picture in a retro-computer format: **ZX Spectrum screen** (`.scr`: 256 x 192, ink and paper per 8 x 8 block), **C64 Koala Painter** (`.koa`: 160 x 200 multicolour, a shared background plus 3 colours per 4 x 8 cell), **C64 Doodle** (`.dd`: 320 x 200 hires, 2 colours per 8 x 8 cell), **Amstrad CPC screen** (`.scr`: mode 0, 160 x 200 with 16 of the CPC's 27 colours, or mode 1, 320 x 200 with 4 of them; the mode and colours are stored in the screen's unused bytes, and the file has an AMSDOS header so a real CPC can load it at &C000; a name with a `.pal` file beside it is skipped, as RECOIL would use that file's colours), **Atari ST Degas** (`.pi1`: 320 x 200, the 16 colours that suit the picture best, from the ST's 512), **Amiga IFF** (`.iff`: 320 x 256, 32 colours from the Amiga's 4096), **MSX Screen 2** (`.sc2`: 256 x 192, foreground and background colour per 8 x 1 strip) or **MSX2 Screen 8** (`.sc8`: 256 x 212, 256 fixed colours). Choose whole picture (black borders) or fill the screen (edges cropped), and dithering: none, an ordered pattern (the typical look of the time) or error diffusion; a preview shows the first picture exactly as the new file will look. The originals are never changed and nothing is overwritten (a name that is taken gets a number). Converting is lossy by nature: each picture is reduced to the machine's colours and colour rules. Every new file is checked before it is kept: RECOIL decodes it and every pixel must match what the converter meant; the machine's colours are taken from RECOIL too, so the viewer shows exactly the same picture. The last format and options chosen are kept while RetroGleek runs |
 | Batch rename | Select pictures, then Ctrl+F2 (or Tools > Batch rename, or right-click). Type a pattern: `#` is the number (`###` gives 001, 002 ...), `[name]` is the current name, so `holiday_###` or `C64_[name]` both work; choose the first number. A preview lists every old and new name; names that would clash with an existing file, appear twice or are not allowed are shown in orange and stop the rename. Extensions are kept, pictures are numbered in grid order, and nothing is overwritten |
 | Details list | Ctrl+Shift+D, the **Details** button next to the filter box, or View > Details list: one row per picture with a small thumbnail, Name, Rating, Label, Type, Platform, Dimensions, Size, Modified and Status (cloud-only, or why a picture could not be opened). Click a column title to sort by it, click again to reverse. The Size slider sets the row height; the list and the thumbnails each keep their own size. Platform and dimensions fill in as pictures are read; when you sort by them, RetroGleek reads the rest of the folder in the background and sorts once more when it has them all. Remembered next time |
+| Find duplicates | Tools > Find duplicates. Choose one or more folders (local drives only; with their subfolders if you like, up to 20,000 pictures) and what to look for: **identical files** only (fastest), also **the same picture in other files**, or also **similar pictures**, strict, normal or loose. It works from certain to fuzzy: files that share a size are compared by their SHA-256 fingerprint; then each picture is decoded (up to 2048 pixels a side in full) and its pixels get a fingerprint of their own, so a PNG saved again as BMP, or a JPEG whose information block changed, still matches. Retro pictures: plain borders are trimmed, layer by layer, and a whole-number enlargement is undone, so an emulator screenshot at 2x with a border matches the original `.scr` or `.koa` exactly. Similar pictures are found by two 64-bit fingerprints of the picture without its border (a difference hash and a DCT "perceptual" hash), in all 8 orientations, so turned and mirrored copies are found too; both must agree, the shapes must match, and a small colour copy of the two is compared for the "alike" percentage, which also says when only the colours differ. Large pictures that look exactly alike are compared pixel by pixel. Heavily cropped copies are not found. The results open in a window of their own, biggest waste of space first: each group lists its pictures with a thumbnail, how each matches, size, marks, date and folder; the one suggested to keep is first, in bold, with the reason (the original retro file, the largest picture, lossless, has your marks, the largest file, the oldest), the others are ticked. **Keep this one** changes it; **Compare the two selected** shows two side by side; double-click opens one; **Show in its folder** goes there. Then **Tag the ticked** (Edit > Select tagged takes over) or **Move the ticked to the Recycle Bin** (asks first, and refuses while every picture of a group is ticked). Cloud-only files are skipped, never downloaded |
 | Analyse folder | Tools > Analyse folder reads every listed picture in the background (with the Subfolders switch, those below too) and fills in the Details list's **Frames** and **Colours** columns and duplicate marking ("Duplicate of ..." in Status, from a SHA-256 fingerprint), with the same full checks as the audit. Progress shows in the status bar; the menu entry becomes Stop analysing; opening another folder stops it. Sorting by Frames or Colours starts it by itself. Results are kept for each file while RetroGleek runs, so coming back or refreshing doesn't repeat the work |
 | Search subfolders | The **Subfolders** switch next to the filter box (or Ctrl+Shift+F, Edit > Include subfolders): lists the pictures in this folder and every folder below it, so the filter searches them all. Hidden and system folders are skipped, and a search stops at 20,000 pictures. The switch turns itself off when you open another folder or drive (refreshing the same folder keeps it on); resting the pointer on a tile shows which subfolder it is in |
 | Address bar | Ctrl+L, type or paste a local path, Enter |
@@ -349,6 +353,7 @@ the source and build it yourself with `build.bat`.
 | `ScreenEffects.cs` | Screen effect presets and the automatic choice of effects for each computer |
 | `Marks.cs` | Ratings, colour labels and tags (`marks.tsv`) |
 | `ContactSheet.cs` | Contact sheet: lossless PNG index sheets |
+| `Duplicates.cs` | Find duplicates: identical files, the same picture in other files, similar pictures (dHash / pHash), and the results window |
 | `JpegRotate.cs` | Lossless JPEG changes: the turn on disk, and writing your rating into the photo |
 | `RetroConvert.cs` | Converting pictures into retro formats (ZX Spectrum, C64 Koala, Atari ST Degas, Amiga IFF, MSX Screen 2 and 8), checked with RECOIL |
 | `WinCodecs.cs` | Pictures decoded by Windows' own codecs (WebP, AVIF, HEIC, JPEG XL, camera RAW); fast thumbnails of big JPEGs |
