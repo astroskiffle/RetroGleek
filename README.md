@@ -19,7 +19,6 @@ Powered by advanced video shaders, RetroGleek doesn't just slap a filter on your
 ### More Than Just a Nostalgia Machine
 
 While RetroGleek shines at breathing life into vintage visuals, it also doubles as a fast, reliable image viewer for modern file types. It doesn't try to compete with bloated commercial software, instead, it stays lightweight, respects your privacy, and is built for 100% offline use.
-Stop staring at sterile pixels. Rediscover the authentic glow of retro computing.
 
 It builds into **one small `.exe`** using the C# compiler that already ships with Windows: no SDK, no installer,
 no NuGet packages and no internet connection.
