@@ -37,7 +37,7 @@ no NuGet packages and no internet connection.
 
 ## Download
 
-**Windows 10 and 11.** Go to the [Releases](https://github.com/astroskiffle/Gleek3Deek/releases) page, download
+**Windows 10 and 11.** Go to the [Releases](https://github.com/astroskiffle/RetroGleek/releases) page, download
 `RetroGleek.exe`, put it in a folder of its own (it keeps its settings next to itself) and double-click it.
 Nothing to install.
 
