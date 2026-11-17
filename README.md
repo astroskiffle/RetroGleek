@@ -22,6 +22,8 @@ While RetroGleek shines at breathing life into vintage visuals, it also doubles 
 It builds into **one small `.exe`** using the C# compiler that already ships with Windows: no SDK, no installer,
 no NuGet packages and no internet connection.
 
+![convert](images/convert.png)
+
 ## Features
 
 - **Folder tree + thumbnail grid.** The tree is lazy-loaded; folders are scanned and thumbnails are decoded on
