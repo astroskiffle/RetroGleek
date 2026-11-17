@@ -74,6 +74,11 @@ no NuGet packages and no internet connection.
   picture). Any decoding error is caught and shown as a message instead of crashing the viewer.
 - The five standard formats are decoded by Windows' own GDI+, which Windows Update keeps patched.
 
+## Download (Windows, no console needed)
+
+Go to the **[Releases](../../releases)** page, download `RetroGleek.exe` and `RetroGleekCli.exe` Double-click `RetroGleek.exe`. Nothing to install.
+
+
 ## Build
 
 Requirements: Windows 10 or 11 (which includes .NET Framework 4.x and its C# compiler).
