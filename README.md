@@ -84,7 +84,7 @@ overwritten without asking, and RetroGleek never goes online.
 
 | | |
 |---|---|
-| ![The browser: folder tree, thumbnails of a folder of retro pictures, and the preview pane](images/browser.png) | ![The details list with platform, dimensions, colours, ratings and labels](images/details.png) |
+| ![The browser: folder tree, thumbnails of a folder of retro pictures, and the preview pane](images/browser.jpg) | ![The details list with platform, dimensions, colours, ratings and labels](images/details.jpg) |
 | *Browse folders of modern and retro pictures* | *Sort, rate, tag and audit a collection* |
 
 - **Folder tree + thumbnail grid.** The tree is lazy-loaded; folders are scanned and thumbnails are decoded on
