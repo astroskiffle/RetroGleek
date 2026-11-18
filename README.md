@@ -1,6 +1,7 @@
 # RetroGleek
 
-![A Commodore 64 picture in RetroGleek, shown on a simulated CRT with scanlines and glow](images/title.jpg)
+![The details list with platform, dimensions, colours, ratings and labels](images/DualMode.jpg)
+*Browse folders of modern and retro pictures* | *Sort, rate, tag and audit a collection*
 
 ### 📺 See your retro pictures the way they were meant to be seen
 
@@ -72,11 +73,6 @@ Everything is in the **menu bar**, with its shortcut, and **F1** lists every key
 overwritten without asking, and RetroGleek never goes online.
 
 ## ✨ Features
-
-| | |
-|---|---|
-| ![The browser: folder tree, thumbnails of a folder of retro pictures, and the preview pane](images/browser.jpg) | ![The details list with platform, dimensions, colours, ratings and labels](images/DualMode.jpg) |
-| *Browse folders of modern and retro pictures* | *Sort, rate, tag and audit a collection* |
 
 - 🗂️ **Browse and organise:** folder tree and fast thumbnails, filter and sort, a details list, dual pane (two
   folders side by side), ratings, colour labels and tags, batch rename, undo, and a preview pane.
