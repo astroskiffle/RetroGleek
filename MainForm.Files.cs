@@ -48,6 +48,7 @@ partial class MainForm
         gCopy = AddEntry(gridMenu, "Copy", "Ctrl+C", delegate { DoCopy(false); });
         gPaste = AddEntry(gridMenu, "Paste", "Ctrl+V", delegate { DoPaste(false); });
         gridMenu.Items.Add(new ToolStripSeparator());
+        gProps = AddEntry(gridMenu, "Properties...", "Alt+Enter", delegate { ShowProperties(); });
         gRate = new ToolStripMenuItem("Rating");               // the selected pictures (or the focused one), as Alt+0..5
         for (int ri = 0; ri <= 5; ri++)
         {
@@ -108,7 +109,7 @@ partial class MainForm
     const int MaxFavourites = 20, MaxRecentFolders = 10;
     readonly List<string> favourites = new List<string>();
     readonly List<string> recentFolders = new List<string>();
-    ToolStripMenuItem tFav, gRate;
+    ToolStripMenuItem tFav, gRate, gProps;
 
     void LoadFavourites()
     {
@@ -227,6 +228,7 @@ partial class MainForm
             if (shared < 0) shared = st; else if (shared != st) { shared = -2; break; }
         }
         gRate.Enabled = on && targets.Count > 0;
+        gProps.Enabled = on;
         foreach (ToolStripItem ti in gRate.DropDownItems)
         {
             var tmi = ti as ToolStripMenuItem;
@@ -357,6 +359,35 @@ partial class MainForm
             if (MoveItems(srcs, dest)) { try { Clipboard.Clear(); } catch (Exception) { } SetCut(null); }   // cut files are pasted once, as in Explorer
         }
         else CopyItems(srcs, dest);
+    }
+
+    // ---------------------------------------------------------------- File > Properties (Metadata.cs)
+
+    // the picture whose details are shown: the one in the viewer, or the focused (else the first selected) one
+    string PropertiesTarget()
+    {
+        if (comparing) return null;
+        if (viewing) return canvas.CurrentPath;
+        int f = grid.FocusIndex;
+        Item it = f >= 0 && f < grid.Items.Count && grid.Items[f].Sel ? grid.Items[f] : null;
+        if (it == null) { List<int> sel = grid.SelectedIndices(); if (sel.Count > 0) it = grid.Items[sel[0]]; }
+        return it == null ? null : it.Path;
+    }
+
+    // one window per picture; several can be open at once
+    void ShowProperties()
+    {
+        string p = PropertiesTarget();
+        if (p == null) return;
+        if (!File.Exists(p)) { Warn("That picture isn't there any more:\n" + p); return; }
+        var f = new MetaForm(p, DarkTitle);
+        f.FileChanged = delegate (string changed)
+        {
+            if (viewing && string.Equals(canvas.CurrentPath, changed, StringComparison.OrdinalIgnoreCase)) canvas.Reload();
+            if (grid.Dir != null && grid.Covers(Path.GetDirectoryName(changed))) grid.Rescan();
+            UpdatePreview();
+        };
+        f.Show(this);
     }
 
     // ---------------------------------------------------------------- Settings > Clear history
@@ -1674,6 +1705,9 @@ partial class MainForm
             "                          (marks are kept in marks.tsv next to settings.ini, never in the pictures)",
             "                          ratings stored in photos by Windows / Lightroom show in silver (read only)",
             "  Edit > Rating > Write my ratings into the files   copies your stars into JPEG / PNG files (asks first)",
+            "  Alt+Enter               properties: every EXIF, GPS, IPTC, XMP and PNG text detail of the picture (also in",
+            "                          the viewer); edit the title, description, keywords, author and copyright of JPEG and",
+            "                          PNG files (written into the file's XMP, checked before it replaces the old file)",
             "  F2                      rename",
             "  Ctrl+F2                 batch rename the selection (pattern such as holiday_###, with a preview)",
             "  Ctrl+Shift+C            compare the 2 selected pictures side by side (zoom and panning linked;",
@@ -2090,6 +2124,8 @@ partial class MainForm
         MenuSep(file);
         MenuKey(file, "&Save as PNG (lossless)...", "Ctrl+S", Keys.Control | Keys.S,
             delegate { return viewing ? canvas.HasPicture : grid.SelectedIndices().Count > 0; }, null);
+        MenuKey(file, "&Properties (all details, edit title and keywords)...", "Alt+Enter", Keys.Alt | Keys.Enter,
+            delegate { return PropertiesTarget() != null; }, null);
         MenuKey(file, "Export all &frames as PNG...", "Ctrl+Shift+S", Keys.Control | Keys.Shift | Keys.S,
             delegate { return viewing ? canvas.HasPicture : grid.SelectedIndices().Count > 0; }, null);
         MenuEntry(file, "Save the &turn into the JPEG (lossless)...", "", delegate
@@ -2467,6 +2503,7 @@ partial class MainForm
         int markKind, markValue = MarkKey(keyData, out markKind);
         if (k == Keys.O && shift && !ctrl && !alt && !typing && !comparing && (!viewing || CanBeforeAfter() || CanRetroPreview())) { StartBeforeAfter(); return true; }   // before / after, or the retro preview
         if (comparing) return markKind != 0 || CompareKey(keyData);       // marks are given in the browser or the viewer
+        if (alt && !ctrl && !shift && (k == Keys.Enter || k == Keys.Return) && !typing) { ShowProperties(); return true; }
         if (ctrl && shift && k == Keys.C && !viewing) { StartCompare(); return true; }
         if (ctrl && shift && k == Keys.S) { DoExportFrames(); return true; }
         if (ctrl && shift && k == Keys.A) { DoAudit(true); return true; }

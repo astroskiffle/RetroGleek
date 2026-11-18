@@ -108,6 +108,8 @@
 //                      Screen 8 .sc8), every file checked by RECOIL
 //   Duplicates.cs      finding identical, same and similar pictures across folders (Tools > Find duplicates):
 //                      file hashes, pixel hashes (retro screenshots trimmed and reduced), dHash / pHash fingerprints
+//   Metadata.cs        File > Properties: every EXIF, GPS, IPTC, XMP and PNG text detail a picture holds, and writing
+//                      the title, description, keywords, author and copyright into JPEG and PNG files (XMP)
 //   RECOIL.cs          generated RECOIL library (never edit by hand; see tools/downgrade_recoil.py)
 
 using System;

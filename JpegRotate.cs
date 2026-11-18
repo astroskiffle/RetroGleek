@@ -249,7 +249,24 @@ static class JpegRating
     public static void Write(string path, int stars)
     {
         stars = Math.Max(0, Math.Min(5, stars));
-        if (!JpegRotate.IsJpeg(path)) throw new IOException("only JPEG photos can hold a rating written by RetroGleek.");
+        int s = stars;
+        Rewrite(path, delegate (string old) { return NewXmp(old, s); },
+                delegate (byte[] d, int t, int end) { PatchTiff(d, t, end, s); },
+                delegate (string file, Image img)
+                {
+                    if (FileRating.Read(file, img, true) != s) throw new IOException("the rating could not be confirmed, so nothing was changed.");
+                });
+    }
+
+    // what changes the EXIF block in place (or null: it is copied as it is)
+    internal delegate void TiffPatch(byte[] d, int t, int end);
+
+    // The one way RetroGleek changes a JPEG's metadata: change turns the XMP packet (null = none yet) into the new one,
+    // patch may change values in the EXIF block in place, and confirm checks the new file (under its temporary name)
+    // before it replaces the original; it throws to leave the photo as it was. The picture data is never touched.
+    internal static void Rewrite(string path, Func<string, string> change, TiffPatch patch, Action<string, Image> confirm)
+    {
+        if (!JpegRotate.IsJpeg(path)) throw new IOException("only JPEG photos are handled here.");
         if ((File.GetAttributes(path) & Util.CloudMask) != 0) throw new IOException("cloud-only, not stored on this PC.");
         if ((File.GetAttributes(path) & FileAttributes.ReadOnly) != 0) throw new IOException("the file is read-only.");
         byte[] data = File.ReadAllBytes(path);
@@ -274,10 +291,10 @@ static class JpegRating
         if (sos < 0) throw new IOException("its JPEG structure could not be read.");
 
         byte[] head = (byte[])data.Clone();
-        if (exifAt >= 0) PatchTiff(head, exifAt + 10, exifAt + exifLen, stars);
+        if (exifAt >= 0 && patch != null) patch(head, exifAt + 10, exifAt + exifLen);
 
         string oldXmp = xmpAt >= 0 ? Encoding.UTF8.GetString(data, xmpAt + 4 + XmpHeader.Length, xmpLen - 4 - XmpHeader.Length) : null;
-        byte[] packet = Encoding.UTF8.GetBytes(NewXmp(oldXmp, stars));
+        byte[] packet = Encoding.UTF8.GetBytes(change(oldXmp));
         byte[] hdr = Encoding.ASCII.GetBytes(XmpHeader);
         int segLen = 2 + hdr.Length + packet.Length;
         if (segLen > 65535) throw new IOException("its XMP block would be too large for one JPEG segment.");
@@ -300,7 +317,7 @@ static class JpegRating
         try
         {
             File.WriteAllBytes(tmp, result);
-            Check(data, sos, tmp, result.Length - (data.Length - sos), stars);
+            Check(data, sos, tmp, result.Length - (data.Length - sos), confirm);
             File.Replace(tmp, path, null, true);           // keeps the original's creation date and attributes
         }
         finally { try { if (File.Exists(tmp)) File.Delete(tmp); } catch (Exception) { } }
@@ -350,15 +367,7 @@ static class JpegRating
                    "<rdf:Description rdf:about=\"\" xmlns:xmp=\"" + NsXmp + "\"" + (stars > 0 ? " xmp:Rating=\"" + stars + "\"" : "") + "/>" +
                    "</rdf:RDF></x:xmpmeta>" + new string(' ', 2048) + "<?xpacket end=\"w\"?>";   // room for other programs to edit in place
         }
-        var doc = new XmlDocument { PreserveWhitespace = true, XmlResolver = null };
-        var rs = new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null };
-        try
-        {
-            using (var sr = new StringReader(old.TrimEnd('\0')))
-            using (XmlReader xr = XmlReader.Create(sr, rs))
-                doc.Load(xr);
-        }
-        catch (XmlException) { throw new IOException("its XMP block could not be read, so it was left as it was."); }
+        XmlDocument doc = LoadXmp(old);
         var nm = new XmlNamespaceManager(doc.NameTable);
         nm.AddNamespace("rdf", NsRdf);
         XmlNode rdf = doc.SelectSingleNode("//rdf:RDF", nm);
@@ -394,10 +403,7 @@ static class JpegRating
                 target.Attributes.Append(m);
             }
         }
-        var ws = new XmlWriterSettings { OmitXmlDeclaration = true, Encoding = new UTF8Encoding(false), Indent = false };
-        var sb = new StringBuilder();
-        using (XmlWriter xw = XmlWriter.Create(sb, ws)) doc.Save(xw);
-        return sb.ToString();
+        return SaveXmp(doc);
     }
 
     static List<XmlNode> Children(XmlNode n)
@@ -408,8 +414,8 @@ static class JpegRating
     }
 
     // the picture data (from the start-of-scan marker to the end) must be byte for byte the same, the photo must
-    // still decode, and the rating must read back
-    static void Check(byte[] original, int sos, string path, int newSos, int stars)
+    // still decode, and confirm must agree (the rating, or the fields, read back)
+    static void Check(byte[] original, int sos, string path, int newSos, Action<string, Image> confirm)
     {
         byte[] d = File.ReadAllBytes(path);
         int tail = original.Length - sos;
@@ -418,9 +424,48 @@ static class JpegRating
             if (d[newSos + i] != original[sos + i]) throw new IOException("the new file did not check out, so nothing was changed.");
         using (var ms = new MemoryStream(d, false))
         using (Image img = Image.FromStream(ms, false, true))               // validates the data
+            confirm(path, img);
+    }
+
+    // a JPEG's XMP packet (the main one), or null if it has none or its structure can't be read
+    internal static string ReadXmp(byte[] data)
+    {
+        if (data == null || data.Length < 4 || data[0] != 0xFF || data[1] != 0xD8) return null;
+        int p = 2;
+        while (p + 4 <= data.Length && data[p] == 0xFF)
         {
-            if (FileRating.Read(path, img, true) != stars) throw new IOException("the rating could not be confirmed, so nothing was changed.");
+            int marker = data[p + 1];
+            if (marker == 0xDA || marker == 0xD9) break;
+            int len = (data[p + 2] << 8) | data[p + 3];
+            if (len < 2 || p + 2 + len > data.Length) break;
+            if (marker == 0xE1 && Starts(data, p + 4, len - 2, XmpHeader))
+                return Encoding.UTF8.GetString(data, p + 4 + XmpHeader.Length, len - 2 - XmpHeader.Length).TrimEnd('\0');
+            p += 2 + len;
         }
+        return null;
+    }
+
+    // an XMP packet as an XML document (DTDs and outside references refused); throws IOException when it can't be read
+    internal static XmlDocument LoadXmp(string packet)
+    {
+        var doc = new XmlDocument { PreserveWhitespace = true, XmlResolver = null };
+        var rs = new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null };
+        try
+        {
+            using (var sr = new StringReader(packet.TrimEnd('\0')))
+            using (XmlReader xr = XmlReader.Create(sr, rs))
+                doc.Load(xr);
+        }
+        catch (XmlException) { throw new IOException("its XMP block could not be read, so it was left as it was."); }
+        return doc;
+    }
+
+    internal static string SaveXmp(XmlDocument doc)
+    {
+        var ws = new XmlWriterSettings { OmitXmlDeclaration = true, Encoding = new UTF8Encoding(false), Indent = false };
+        var sb = new StringBuilder();
+        using (XmlWriter xw = XmlWriter.Create(sb, ws)) doc.Save(xw);
+        return sb.ToString();
     }
 }
 
@@ -453,6 +498,19 @@ static class PngRating
     public static void Write(string path, int stars)
     {
         stars = Math.Max(0, Math.Min(5, stars));
+        int s = stars;
+        Rewrite(path, delegate (string old) { return JpegRating.NewXmp(old, s); },
+                delegate (byte[] d, int t, int end) { JpegRating.PatchTiff(d, t, end, s); },
+                delegate (string file, Image img)
+                {
+                    if (FileRating.Read(file, img, true) != s) throw new IOException("the rating could not be confirmed, so nothing was changed.");
+                });
+    }
+
+    // The one way RetroGleek changes a PNG's metadata (as JpegRating.Rewrite): a new XMP chunk from change, the eXIf
+    // chunk patched in place (patch, or copied as it is when null), checked with confirm before it replaces the file.
+    internal static void Rewrite(string path, Func<string, string> change, JpegRating.TiffPatch patch, Action<string, Image> confirm)
+    {
         if (!IsPng(path)) throw new IOException("only PNG files are handled here.");
         if ((File.GetAttributes(path) & Util.CloudMask) != 0) throw new IOException("cloud-only, not stored on this PC.");
         if ((File.GetAttributes(path) & FileAttributes.ReadOnly) != 0) throw new IOException("the file is read-only.");
@@ -471,7 +529,7 @@ static class PngRating
         if (firstIdat < 0) throw new IOException("its PNG structure could not be read (no picture data).");
 
         string oldXmp = xmp >= 0 ? XmpText(data, chunks[xmp]) : null;
-        byte[] packet = Encoding.UTF8.GetBytes(JpegRating.NewXmp(oldXmp, stars));
+        byte[] packet = Encoding.UTF8.GetBytes(change(oldXmp));
         byte[] key = Encoding.ASCII.GetBytes(XmpKeyword);
         var body = new byte[key.Length + 5 + packet.Length];               // keyword, 0, not compressed, method 0, no language, no translated keyword
         Buffer.BlockCopy(key, 0, body, 0, key.Length);
@@ -486,11 +544,11 @@ static class PngRating
             Chunk c = chunks[i];
             if (i == xmp) continue;                                        // the old XMP chunk: replaced
             if (i == firstIdat) outp.Write(xmpChunk, 0, xmpChunk.Length);
-            if (i == exif)
+            if (i == exif && patch != null)
             {
                 var ex = new byte[c.Len];
                 Buffer.BlockCopy(data, c.At + 8, ex, 0, c.Len);
-                JpegRating.PatchTiff(ex, 0, ex.Length, stars);
+                patch(ex, 0, ex.Length);
                 byte[] exChunk = MakeChunk("eXIf", ex);
                 outp.Write(exChunk, 0, exChunk.Length);
                 continue;
@@ -504,7 +562,7 @@ static class PngRating
         try
         {
             File.WriteAllBytes(tmp, result);
-            Check(data, chunks, tmp, stars);
+            Check(data, chunks, tmp, confirm);
             File.Replace(tmp, path, null, true);           // keeps the original's creation date and attributes
         }
         finally { try { if (File.Exists(tmp)) File.Delete(tmp); } catch (Exception) { } }
@@ -596,7 +654,7 @@ static class PngRating
     // Every chunk except the XMP and eXIf ones must be byte for byte the same and in the same order, the new file
     // must parse with every checksum right and exactly one XMP chunk, the picture must still decode, and the rating
     // must read back
-    static void Check(byte[] original, List<Chunk> oldChunks, string path, int stars)
+    static void Check(byte[] original, List<Chunk> oldChunks, string path, Action<string, Image> confirm)
     {
         const string bad = "the new file did not check out, so nothing was changed.";
         byte[] d = File.ReadAllBytes(path);
@@ -620,8 +678,19 @@ static class PngRating
         }
         using (var ms = new MemoryStream(d, false))
         using (Image img = Image.FromStream(ms, false, true))               // validates the data
+            confirm(path, img);
+    }
+
+    // a PNG's XMP packet, or null if it has none, or it is compressed, or the file's chunks can't be read
+    internal static string ReadXmp(byte[] data)
+    {
+        try
         {
-            if (FileRating.Read(path, img, true) != stars) throw new IOException("the rating could not be confirmed, so nothing was changed.");
+            int end;
+            foreach (Chunk c in Parse(data, out end))
+                if (c.Type == "iTXt" && IsXmp(data, c)) return XmpText(data, c).TrimEnd('\0');
         }
+        catch (IOException) { }
+        return null;
     }
 }
