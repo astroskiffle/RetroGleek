@@ -21,7 +21,7 @@ It opens hundreds of retro formats out of the box (Amiga, Atari, Commodore 64, Z
 and many more, 567 file extensions in all) thanks to [RECOIL](https://github.com/pfusik/recoil).
 
 ![The details list with platform, dimensions, colours, ratings and labels](bugs_daffy.png)
-* *LEFT: How a modern PC renders the image * | * RIGHT: *The same image rendered through the smart shaders on RetroGleek*
+**LEFT:** *How a modern PC renders the image* | * **RIGHT:** *The same image rendered through the smart shaders on RetroGleek*
 
 ### 🕹️ Your photos on an 8-bit computer
 
