@@ -36,12 +36,13 @@ sealed partial class MainForm : Form
     ToolStripMenuItem gDetails, gSortDesc;
     readonly ToolStripMenuItem[] gSort = new ToolStripMenuItem[4];
     readonly ToolTip navTip = new ToolTip();
-    readonly List<string> hist = new List<string>();
-    int hpos = -1;
-    string pendingNav;
+    // back / forward history: the active pane's own (MainForm.Dual.cs)
+    List<string> hist { get { return act.Hist; } }
+    int hpos { get { return act.HPos; } set { act.HPos = value; } }
+    string pendingNav { get { return act.PendingNav; } set { act.PendingNav = value; } }
     bool suppressFilter, suppressSort, suppressSize;
     TreeView tree;
-    ThumbGrid grid;
+    ThumbGrid grid;                                        // the active pane's grid (the only one in single-pane mode)
     Canvas canvas;
     Label status;
     ImageList icons;
@@ -49,7 +50,7 @@ sealed partial class MainForm : Form
     ContextMenuStrip gridMenu, treeMenu;
     ToolStripMenuItem gInvert, gCut, tCut;
     Button subBtn, viewBtn;
-    DetailHeader detailHeader;
+    DetailHeader detailHeader { get { return act.Header; } }
     PreviewPane preview;                                   // Alt+P: large preview of the focused picture (off by default)
     Splitter previewSplit;
     ToolStripMenuItem gBatch, gFrames, gCompare;
@@ -59,12 +60,6 @@ sealed partial class MainForm : Form
     readonly Dictionary<TreeNode, string> driveDefault = new Dictionary<TreeNode, string>();
     readonly WinTimer navTimer = new WinTimer { Interval = 180 };
 
-    // auto-refresh: watches the folder shown in the grid (files only, not subfolders) and rescans it shortly
-    // after something changes there. Uses Windows' own change notifications for local drives; nothing goes online.
-    FileSystemWatcher watcher;
-    string watchedDir;
-    bool watchedRecursive;
-    readonly WinTimer refreshTimer = new WinTimer { Interval = 700 };
     string navPath, startArg;
     int revealToken;
     bool viewing, suppress, full;
@@ -100,27 +95,10 @@ sealed partial class MainForm : Form
         tree.NodeMouseClick += OnTreeClick;
         tree.GotFocus += delegate { lastPane = tree; };
 
-        grid = new ThumbGrid();
-        grid.GotFocus += delegate { lastPane = grid; };
-        grid.OpenRequested += OpenIndex;
-        grid.ContextRequested += ShowGridMenu;
-        grid.SelectionChanged += UpdateStatus;
-        grid.SelectionChanged += UpdatePreview;
-        grid.AnalyseProgress += delegate (int done, int total) { status.Text = "  Analysing " + done + " of " + total + " pictures (colours, frames, duplicates)..."; };
-        grid.AnalyseFinished += delegate (int n, int bad, int dups)
-        {
-            if (n < 0) { UpdateStatus(); return; }
-            status.Text = "  Analysed " + n + (n == 1 ? " picture" : " pictures") + ": " + bad + " could not be opened, " +
-                          dups + (dups == 1 ? " duplicate" : " duplicates") + "   (Details view: Frames, Colours and Status columns)";
-        };
-        grid.Loaded += OnFolderLoaded;
-        grid.ListChanged += delegate { UpdateStatus(); SyncCanvas(); SyncSortControls(); UpdatePreview(); };
-        grid.TileStepChanged += delegate
-        {
-            suppressSize = true;
-            try { sizeSlider.Value = grid.TileStep; } finally { suppressSize = false; }
-        };
-        grid.FilterCleared += delegate { suppressFilter = true; filterBox.Text = ""; suppressFilter = false; };
+        paneA = MakePane();                                // the browser's thumbnails; a second pane for dual-pane mode
+        paneB = MakePane();
+        act = paneA;
+        grid = paneA.Grid;
         lastPane = grid;
 
         canvas = new Canvas();
@@ -236,9 +214,8 @@ sealed partial class MainForm : Form
         filterPanel.Controls.Add(fLab);
 
         right = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(24, 24, 24) };
-        detailHeader = new DetailHeader(grid) { Visible = false };
-        right.Controls.Add(grid);                 // fill first, edge-docked after
-        right.Controls.Add(detailHeader);         // column titles of the Details view, just above the grid
+        BuildPanes();
+        right.Controls.Add(split);                // fill first, edge-docked after: the pane(s), each with its Details header
         preview = new PreviewPane { Dock = DockStyle.Right, Width = Util.S(320), Visible = false };
         previewSplit = new Splitter
         {
@@ -273,12 +250,11 @@ sealed partial class MainForm : Form
         BuildRoots();
 
         navTimer.Tick += delegate { navTimer.Stop(); if (navPath != null) ShowFolder(navPath, null, -1, false); };
-        refreshTimer.Tick += delegate { refreshTimer.Stop(); AutoRefresh(); };
         treeTimer.Tick += delegate { treeTimer.Stop(); ApplyTreeChanges(); };
         driveTimer.Tick += delegate { driveTimer.Stop(); RefreshDrives(); };
 
         AllowDrop = true;
-        foreach (Control c in new Control[] { this, grid, canvas })   // dropping a file here opens it
+        foreach (Control c in new Control[] { this, canvas })         // dropping a file here opens it (the panes: MakePane)
         {
             c.AllowDrop = true;
             c.DragEnter += OnDragEnterFiles;
@@ -326,6 +302,18 @@ sealed partial class MainForm : Form
             grid.RowStep = Prefs.Int("rowSize", grid.RowStep, 0, ThumbGrid.TileStepMax);
             grid.ShowDetails = Prefs.Bool("details", grid.ShowDetails);
             SetDetailsView(Prefs.Bool("detailsView", false));
+            // the second pane: its own remembered view (like the first pane's, the first time)
+            ThumbGrid gb = paneB.Grid;
+            int sk2 = Prefs.Int("pane2Sort", grid.SortKey, 0, 10);
+            bool needs2 = sk2 >= 6 && sk2 <= 8;
+            gb.SetSort(needs2 ? 0 : sk2, needs2 ? false : Prefs.Bool("pane2SortDesc", grid.SortDesc));
+            gb.GridStep = Prefs.Int("pane2ThumbSize", grid.GridStep, 0, ThumbGrid.TileStepMax);
+            gb.RowStep = Prefs.Int("pane2RowSize", grid.RowStep, 0, ThumbGrid.TileStepMax);
+            gb.ShowDetails = Prefs.Bool("pane2Details", grid.ShowDetails);
+            gb.DetailsMode = Prefs.Bool("pane2DetailsView", grid.DetailsMode);
+            paneB.Header.Visible = gb.DetailsMode;            // (SetDetailsView works on the active pane)
+            wantDual = Prefs.Bool("dualPane", false);
+            splitRatio = Prefs.Int("dualSplit", 500, 150, 850) / 1000.0;
             canvas.FitLock = Prefs.Bool("fitToScreen", false);
             canvas.Checker = Prefs.Bool("checkerboard", false);
             canvas.PixMode = Prefs.Int("enlargedPixels", 0, 0, 3);
@@ -354,9 +342,11 @@ sealed partial class MainForm : Form
     }
 
     // the last folder, if it is still there (local drives only)
-    static string LastFolder()
+    static string LastFolder() { return LastFolder("lastFolder"); }
+
+    static string LastFolder(string key)
     {
-        string p = Prefs.Get("lastFolder", null);
+        string p = Prefs.Get(key, null);
         try
         {
             if (string.IsNullOrEmpty(p) || p.StartsWith("\\\\")) return null;
@@ -384,12 +374,20 @@ sealed partial class MainForm : Form
         Prefs.Set("window", b.X.ToString(inv) + "," + b.Y.ToString(inv) + "," + b.Width.ToString(inv) + "," + b.Height.ToString(inv));
         Prefs.Set("maximized", max);
         Prefs.Set("treeWidth", (int)Math.Round(tree.Width / Util.K));
-        Prefs.Set("sort", grid.SortKey);
-        Prefs.Set("sortDesc", grid.SortDesc);
-        Prefs.Set("thumbSize", grid.GridStep);
-        Prefs.Set("rowSize", grid.RowStep);
-        Prefs.Set("details", grid.ShowDetails);
-        Prefs.Set("detailsView", grid.DetailsMode);
+        // each pane's own view, whichever one is active now (the first pane under the old names)
+        ThumbGrid ga = paneA.Grid, gb = paneB.Grid;
+        Prefs.Set("sort", ga.SortKey);
+        Prefs.Set("sortDesc", ga.SortDesc);
+        Prefs.Set("thumbSize", ga.GridStep);
+        Prefs.Set("rowSize", ga.RowStep);
+        Prefs.Set("details", ga.ShowDetails);
+        Prefs.Set("detailsView", ga.DetailsMode);
+        Prefs.Set("pane2Sort", gb.SortKey);
+        Prefs.Set("pane2SortDesc", gb.SortDesc);
+        Prefs.Set("pane2ThumbSize", gb.GridStep);
+        Prefs.Set("pane2RowSize", gb.RowStep);
+        Prefs.Set("pane2Details", gb.ShowDetails);
+        Prefs.Set("pane2DetailsView", gb.DetailsMode);
         if (!Program.RetroFromArgs) Prefs.Set("retro", Retro.Enabled);
         Prefs.Set("fitToScreen", canvas.FitLock);
         Prefs.Set("checkerboard", canvas.Checker);
@@ -415,7 +413,10 @@ sealed partial class MainForm : Form
         StorePresets();
         StoreRecentDest();
         StoreFavourites();
-        Prefs.Set("lastFolder", historyClearedAt != null ? null : grid.Dir);   // after Clear history: not remembered
+        Prefs.Set("lastFolder", historyClearedAt != null ? null : paneA.Grid.Dir);   // after Clear history: not remembered
+        Prefs.Set("pane2Folder", historyClearedAt != null ? null : paneB.Grid.Dir);
+        Prefs.Set("dualPane", dual);
+        Prefs.Set("dualSplit", (int)Math.Round(splitRatio * 1000));
         Prefs.Save();
     }
 
@@ -428,7 +429,7 @@ sealed partial class MainForm : Form
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
-        Application.AddMessageFilter(new WheelRouter(this, tree, grid));
+        Application.AddMessageFilter(new WheelRouter(this, tree, paneA.Grid, paneB.Grid));
         pcNode.Expand();
         LabelDrives();
         StartTreeWatch();
@@ -443,6 +444,7 @@ sealed partial class MainForm : Form
             if (q != null) tree.SelectedNode = q;
             grid.Focus();
         }
+        if (wantDual) SetDual(true);                       // dual-pane mode, as it was last time
     }
 
     // ================================================================ folder tree (lazy, async)
@@ -967,51 +969,18 @@ sealed partial class MainForm : Form
         UpdateStatus();
     }
 
-    void OnFolderLoaded(string dir, string err)
+    void OnFolderLoaded(Pane p, string dir, string err)
     {
+        RecordHistory(p, dir);
+        Watch(p, err == null ? dir : null);
+        if (p != act) return;                               // the other pane: nothing else to update
         UpdateStatus();
         if (!viewing) Text = dir + " - RetroGleek";
-        RecordHistory(dir);
         if (historyClearedAt != null && !Util.SameDir(dir, historyClearedAt)) historyClearedAt = null;   // a new folder: history starts again
         if (err == null && historyClearedAt == null) RememberRecentFolder(dir);
         if (!addrBox.Focused) addrBox.Text = dir;
         UpdateNavButtons();
         SyncCanvas();
-        Watch(err == null ? dir : null);
-    }
-
-    void Watch(string dir)
-    {
-        if (dir != null && Util.SameDir(dir, watchedDir) && watcher != null && watchedRecursive == grid.Recursive) return;
-        if (watcher != null)
-        {
-            try { watcher.EnableRaisingEvents = false; watcher.Dispose(); } catch (Exception) { }
-            watcher = null;
-        }
-        watchedDir = null;
-        refreshTimer.Stop();
-        if (dir == null) return;
-        try
-        {
-            var w = new FileSystemWatcher(dir)
-            {
-                IncludeSubdirectories = grid.Recursive,
-                NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.Attributes
-            };
-            FileSystemEventHandler changed = delegate { Util.Post(this, FolderChanged); };
-            w.Created += changed; w.Deleted += changed; w.Changed += changed;
-            w.Renamed += delegate { Util.Post(this, FolderChanged); };
-            w.Error += delegate { Util.Post(this, FolderChanged); };       // too many changes at once: just rescan
-            w.EnableRaisingEvents = true;
-            watcher = w; watchedDir = dir; watchedRecursive = grid.Recursive;
-        }
-        catch (Exception) { }                                 // e.g. a CD, or a drive that gives no notifications: F5 still works
-    }
-
-    void FolderChanged()                                      // UI thread; waits until the changes settle
-    {
-        refreshTimer.Interval = grid.Recursive ? 2000 : 700;  // a whole tree of folders: wait a little longer
-        refreshTimer.Stop(); refreshTimer.Start();
     }
 
     // the Subfolders switch: applies to the folder that is open, and turns itself off when another folder or drive
@@ -1062,14 +1031,6 @@ sealed partial class MainForm : Form
         viewBtn.ForeColor = on ? Color.White : Color.Gainsboro;
         viewBtn.Text = on ? "Thumbnails" : "Details";
         viewBtn.Width = Util.S(on ? 92 : 72);
-    }
-
-    void AutoRefresh()
-    {
-        if (watchedDir == null || !Util.SameDir(watchedDir, grid.Dir)) return;
-        if (grid.Scanning) { refreshTimer.Start(); return; }   // a scan is running: try again a little later
-        if (!Directory.Exists(watchedDir)) { Watch(null); grid.Rescan(); return; }
-        grid.Rescan();
     }
 
     // hand the viewer the (sorted) list of the folder once the grid has scanned it

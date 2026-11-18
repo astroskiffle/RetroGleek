@@ -58,11 +58,12 @@ sealed class WheelRouter : IMessageFilter
 {
     readonly Form owner;
     readonly TreeView tree;
-    readonly ThumbGrid grid;
+    readonly ThumbGrid[] grids;
 
-    public WheelRouter(Form owner, TreeView tree, ThumbGrid grid)
+    // every thumbnail grid of the window (two in dual-pane mode): the wheel scrolls the one under the pointer
+    public WheelRouter(Form owner, TreeView tree, params ThumbGrid[] grids)
     {
-        this.owner = owner; this.tree = tree; this.grid = grid;
+        this.owner = owner; this.tree = tree; this.grids = grids;
     }
 
     public bool PreFilterMessage(ref Message m)
@@ -70,11 +71,12 @@ sealed class WheelRouter : IMessageFilter
         if (m.Msg != 0x020A || Form.ActiveForm != owner) return false;      // 0x020A = WM_MOUSEWHEEL
         Point p = Control.MousePosition;
         int delta = unchecked((short)(m.WParam.ToInt64() >> 16));
-        if (grid.Visible && !grid.Focused && grid.RectangleToScreen(grid.ClientRectangle).Contains(p))
-        {
-            grid.Wheel(delta, (Control.ModifierKeys & Keys.Control) != 0);
-            return true;
-        }
+        foreach (ThumbGrid grid in grids)
+            if (grid.Visible && !grid.Focused && grid.RectangleToScreen(grid.ClientRectangle).Contains(p))
+            {
+                grid.Wheel(delta, (Control.ModifierKeys & Keys.Control) != 0);
+                return true;
+            }
         if (tree.Visible && !tree.Focused && tree.RectangleToScreen(tree.ClientRectangle).Contains(p))
         {
             ScrollTree(delta);

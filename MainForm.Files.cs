@@ -48,6 +48,8 @@ partial class MainForm
         gCopy = AddEntry(gridMenu, "Copy", "Ctrl+C", delegate { DoCopy(false); });
         gPaste = AddEntry(gridMenu, "Paste", "Ctrl+V", delegate { DoPaste(false); });
         gridMenu.Items.Add(new ToolStripSeparator());
+        gToOther = AddEntry(gridMenu, "Copy to the other pane", "Shift+F5", delegate { SendToOther(false); });
+        gMoveOther = AddEntry(gridMenu, "Move to the other pane", "Shift+F6", delegate { SendToOther(true); });
         gProps = AddEntry(gridMenu, "Properties...", "Alt+Enter", delegate { ShowProperties(); });
         gRate = new ToolStripMenuItem("Rating");               // the selected pictures (or the focused one), as Alt+0..5
         for (int ri = 0; ri <= 5; ri++)
@@ -109,7 +111,7 @@ partial class MainForm
     const int MaxFavourites = 20, MaxRecentFolders = 10;
     readonly List<string> favourites = new List<string>();
     readonly List<string> recentFolders = new List<string>();
-    ToolStripMenuItem tFav, gRate, gProps;
+    ToolStripMenuItem tFav, gRate, gProps, gToOther, gMoveOther;
 
     void LoadFavourites()
     {
@@ -229,6 +231,8 @@ partial class MainForm
         }
         gRate.Enabled = on && targets.Count > 0;
         gProps.Enabled = on;
+        gToOther.Visible = gMoveOther.Visible = dual;
+        gToOther.Enabled = gMoveOther.Enabled = on && CanSendToOther();
         foreach (ToolStripItem ti in gRate.DropDownItems)
         {
             var tmi = ti as ToolStripMenuItem;
@@ -407,8 +411,11 @@ partial class MainForm
                 "Clear history", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
         recentFolders.Clear();
         recentDest.Clear();
-        hist.Clear(); hpos = -1;
-        if (grid.Dir != null) { hist.Add(grid.Dir); hpos = 0; }
+        foreach (Pane pn in Panes)                         // both panes' back / forward lists
+        {
+            pn.Hist.Clear(); pn.HPos = -1; pn.PendingNav = null;
+            if (pn.Grid.Dir != null) { pn.Hist.Add(pn.Grid.Dir); pn.HPos = 0; }
+        }
         historyClearedAt = grid.Dir ?? "";
         UpdateNavButtons();
         StoreFavourites();                                 // writes the (now empty) recent folders too
@@ -1351,7 +1358,7 @@ partial class MainForm
             ComparePaths(a, b);
             Activate();
         };
-        f.MarksChanged = delegate { grid.MarksChanged(); canvas.MarksChanged(); UpdatePreview(); if (!viewing && !comparing) UpdateStatus(); };
+        f.MarksChanged = delegate { MarksChangedAll(); canvas.MarksChanged(); UpdatePreview(); if (!viewing && !comparing) UpdateStatus(); };
         f.FilesDeleted = delegate (List<string> gone) { if (grid.Dir != null) grid.Rescan(); };
         f.FormClosed += delegate { dupForm = null; };
         dupForm = f;
@@ -1568,14 +1575,14 @@ partial class MainForm
     }
 
     // every folder that finishes loading is remembered, except when we got there by going back / forward
-    void RecordHistory(string dir)
+    void RecordHistory(Pane p, string dir)
     {
-        if (pendingNav != null && Util.SameDir(pendingNav, dir)) { pendingNav = null; return; }
-        if (hpos >= 0 && Util.SameDir(hist[hpos], dir)) return;
-        if (hpos < hist.Count - 1) hist.RemoveRange(hpos + 1, hist.Count - hpos - 1);
-        hist.Add(dir);
-        if (hist.Count > 100) hist.RemoveAt(0);
-        hpos = hist.Count - 1;
+        if (p.PendingNav != null && Util.SameDir(p.PendingNav, dir)) { p.PendingNav = null; return; }
+        if (p.HPos >= 0 && Util.SameDir(p.Hist[p.HPos], dir)) return;
+        if (p.HPos < p.Hist.Count - 1) p.Hist.RemoveRange(p.HPos + 1, p.Hist.Count - p.HPos - 1);
+        p.Hist.Add(dir);
+        if (p.Hist.Count > 100) p.Hist.RemoveAt(0);
+        p.HPos = p.Hist.Count - 1;
     }
 
     void GoHistory(int delta)
@@ -1698,6 +1705,11 @@ partial class MainForm
             "  Alt+Left / Alt+Right    back / forward",
             "  Ctrl+D                  add the open folder to the favourites (or remove it); Go > Favourites, Recent folders",
             "  Alt+Up or Backspace     up one folder",
+            "  Ctrl+Shift+2            dual pane: two folders side by side, one folder tree that follows the active pane",
+            "                          (outlined in blue; click a pane or press Tab to switch). Drag pictures from one pane",
+            "                          to the other (same drive moves, another drive copies; Ctrl copies, Shift moves);",
+            "                          files dragged in from Explorer are copied (Shift moves them)",
+            "  Shift+F5 / Shift+F6     dual pane: copy / move the selection to the other pane's folder",
             "  Ctrl+Z                  undo the last rename, batch rename or move (up to 20 steps)",
             "  Alt+0 .. Alt+5          rating: 1 to 5 stars (Alt+0 removes it); also in the viewer and slideshow",
             "  Shift+0 .. Shift+5      colour label: red, yellow, green, blue, purple (Shift+0 removes it)",
@@ -1795,7 +1807,7 @@ partial class MainForm
             "",
             "",
             "ABOUT",
-            "RetroGleek - offline image browser and viewer",
+            "RetroGleek " + Program.Version + " - offline image browser and viewer",
             "Copyright (c) 2026 Mark Billson. Released under the MIT License.",
             "No network access and no telemetry. Files are only written when you save, copy, move, rename or delete,",
             "plus settings.ini next to RetroGleek.exe when it closes (delete it, or Settings > Reset, for the defaults).",
@@ -1850,7 +1862,7 @@ partial class MainForm
     void ShowAbout()
     {
         MessageBox.Show(this,
-            "RetroGleek - offline image browser and viewer\n" +
+            "RetroGleek " + Program.Version + " - offline image browser and viewer\n" +
             "Copyright (c) 2026 Mark Billson. Released under the MIT License.\n" +
             "No network access and no telemetry. Files are only written when you save, copy, move, rename or delete,\n" +
             "plus settings.ini next to RetroGleek.exe when it closes.\n\n" +
@@ -1905,7 +1917,7 @@ partial class MainForm
                     : stars >= 0 ? (stars == 0 ? "Rating removed" : "Rating: " + Marks.StarText(stars))
                     : label == 0 ? "Colour label removed" : "Colour label: " + Marks.LabelNames[label];
         canvas.MarksChanged();
-        grid.MarksChanged();
+        MarksChangedAll();
         UpdatePreview();
         if (viewing)
         {
@@ -1938,7 +1950,7 @@ partial class MainForm
         if (MessageBox.Show(this, "Remove the tag from the " + paths.Count + (paths.Count == 1 ? " tagged picture" : " tagged pictures") + " shown here?\n\n(Ratings and colour labels stay.)",
                             "Clear tags", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
         Marks.Set(paths, -1, -1, false);
-        grid.MarksChanged();
+        MarksChangedAll();
         canvas.MarksChanged();
         UpdatePreview();
         UpdateStatus();
@@ -2161,6 +2173,8 @@ partial class MainForm
                 LastEntry.Text = delegate { return slot < recentDest.Count ? "&" + (slot + 1) + "  " + recentDest[slot].Replace("&", "&&") : ""; };
             }
         }
+        MenuKey(edit, "Copy to the ot&her pane", "Shift+F5", Keys.Shift | Keys.F5, delegate { return CanSendToOther(); }, null);
+        MenuKey(edit, "Move to the other pa&ne", "Shift+F6", Keys.Shift | Keys.F6, delegate { return CanSendToOther(); }, null);
         MenuKey(edit, "&Rename...", "F2", Keys.F2, delegate { return !viewing && (lastPane == tree ? IsPlainFolder(tree.SelectedNode) : grid.SelectedIndices().Count == 1); }, null);
         MenuKey(edit, "&Delete (to Recycle Bin)", "Del", Keys.Delete, delegate { return viewing ? canvas.CurrentPath != null : hasSel(); }, null);
         ToolStripMenuItem turnMenu = MenuSub(edit, "Turn the file (lossless &JPEG)", delegate { return !rotateBusy && (viewing ? canvas.CurrentPath != null : grid.SelectedIndices().Count > 0); });
@@ -2217,6 +2231,8 @@ partial class MainForm
             if (shi == 3 || shi == 9) MenuSep(showMenu);
             MenuEntry(showMenu, ThumbGrid.ShowNames[shi], "", delegate { SetShow(mode); }, null, delegate { return grid.ShowMode == mode; });
         }
+        MenuKey(view, "D&ual pane (two folders side by side)", "Ctrl+Shift+2", Keys.Control | Keys.Shift | Keys.D2, browsing, delegate { return dual; });
+        MenuKey(view, "S&witch to the other pane", "Tab", Keys.Tab, delegate { return dual && !viewing; }, null);
         MenuKey(view, "&Details list", "Ctrl+Shift+D", Keys.Control | Keys.Shift | Keys.D, browsing, delegate { return grid.DetailsMode; });
         MenuEntry(view, "Show &details on tiles", "", delegate { grid.ShowDetails = !grid.ShowDetails; }, delegate { return !viewing && !grid.DetailsMode; }, delegate { return grid.ShowDetails; });
         MenuSep(view);
@@ -2508,6 +2524,7 @@ partial class MainForm
         if (ctrl && shift && k == Keys.S) { DoExportFrames(); return true; }
         if (ctrl && shift && k == Keys.A) { DoAudit(true); return true; }
         if (ctrl && shift && k == Keys.D && !viewing) { SetDetailsView(!grid.DetailsMode); return true; }
+        if (ctrl && shift && !alt && (k == Keys.D2 || k == Keys.NumPad2) && !viewing) { SetDual(!dual); return true; }
         if (ctrl && !shift && !alt && k == Keys.D) { ToggleFavourite(grid.Dir); return true; }
         if (ctrl && shift && !alt && (k == Keys.R || k == Keys.L)) { RotateFiles(k == Keys.R ? 1 : 3); return true; }   // the file, not the view
         if (ctrl && shift && k == Keys.Y && !alt) { TransferTo(false, null); return true; }
@@ -2554,6 +2571,9 @@ partial class MainForm
             else
             {
                 bool tr = lastPane == tree;
+                if (k == Keys.F5 && shift && !ctrl && !alt) { SendToOther(false); return true; }   // dual pane: copy to the other one
+                if (k == Keys.F6 && shift && !ctrl && !alt) { SendToOther(true); return true; }    // dual pane: move to the other one
+                if (k == Keys.Tab && dual && !ctrl && !alt && !shift) { SwitchPane(); return true; }
                 if (markKind != 0 && (!tr || fromMenu)) { DoMark(markKind == 1 ? markValue : -1, markKind == 2 ? markValue : -1, false); return true; }
                 if (alt && !ctrl && !shift && k == Keys.P) { SetPreview(!preview.Visible); return true; }
                 if (k == Keys.X && !ctrl && !alt && !shift && (!tr || fromMenu)) { DoMark(-1, -1, true); return true; }

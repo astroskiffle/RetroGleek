@@ -21,6 +21,7 @@
 //   Ctrl+X then Ctrl+V                cut and paste = move (Explorer-compatible)
 //   Ctrl+Shift+Y / Ctrl+Shift+M       copy / move the selection to a folder (Edit > Copy to / Move to: the last 8)
 //   Ctrl+Shift+F / Subfolders switch  also list the pictures of every folder below this one
+//   Ctrl+Shift+2                      dual pane: two folders side by side (Tab switches; drag across, or Shift+F5 / Shift+F6)
 //   Ctrl+Shift+D / Details button     details list with sortable columns (instead of thumbnails)
 //   Ctrl+Shift+C                      compare the 2 selected pictures side by side (zoom / pan linked)
 //   Ctrl+F2                           batch rename the selection (pattern, preview)
@@ -92,6 +93,8 @@
 //   MainForm.cs        the main window: layout, tree, browsing <-> viewing
 //   MainForm.Files.cs  the main window, continued: menus, file operations, export, address bar, keys
 //   MainForm.Undo.cs   the main window, continued: undo (Ctrl+Z) for renames, batch renames and moves
+//   MainForm.Dual.cs   the main window, continued: the browser panes, and dual-pane mode (two folders side by side,
+//                      one folder tree following the active pane; drag between them, Shift+F5 / Shift+F6)
 //   BatchRename.cs     batch rename: pattern, preview, safe two-step renaming
 //   Settings.cs        remembered settings (settings.ini)
 //   Audit.cs           folder audit: offline HTML report of every picture file in one folder
@@ -135,12 +138,18 @@ using WinTimer = System.Windows.Forms.Timer;
 [assembly: AssemblyProduct("RetroGleek")]
 [assembly: AssemblyCompany("Mark Billson")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 Mark Billson. MIT License.")]
-[assembly: AssemblyVersion("1.2.0.0")]
-[assembly: AssemblyFileVersion("1.2.0.0")]
+[assembly: AssemblyVersion("1.3.0.0")]
+[assembly: AssemblyFileVersion("1.3.0.0")]
 
 static class Program
 {
     static bool reporting;
+
+    // "1.3.0", from the assembly version above (shown in Help > About and F1)
+    public static string Version
+    {
+        get { System.Version v = typeof(Program).Assembly.GetName().Version; return v.Major + "." + v.Minor + "." + v.Build; }
+    }
     public static bool RetroFromArgs = false;       // --retro / --no-retro: just for this run, not saved (set by the window's Main)
 
     // Shows any unexpected error in a message box (Ctrl+C in the box copies the text).
