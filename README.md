@@ -20,6 +20,8 @@ picture gets the usual screen of its own computer:
 It opens hundreds of retro formats out of the box (Amiga, Atari, Commodore 64, ZX Spectrum, MSX, Amstrad CPC
 and many more, 567 file extensions in all) thanks to [RECOIL](https://github.com/pfusik/recoil).
 
+![The details list with platform, dimensions, colours, ratings and labels](bugs_daffy.png)
+
 ### 🕹️ Your photos on an 8-bit computer
 
 Press **Shift+O** on any photo to see it as a ZX Spectrum, C64, Amstrad CPC or MSX would have shown it, with
