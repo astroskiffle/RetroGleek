@@ -102,7 +102,10 @@ static class WinCodec
     // faster for big photos); 0 = full size, and the camera details for the E panel are read too.
     // premultiplied: Format32bppPArgb (fastest to draw), else Format32bppArgb (exact pixels, for saving).
     // Throws on any problem (use Why for the message). Any thread.
-    public static CodecPic Load(string path, int maxSide, bool premultiplied)
+    public static CodecPic Load(string path, int maxSide, bool premultiplied) { return Load(path, maxSide, premultiplied, maxSide <= 0); }
+
+    // details: also read the camera details (the preview pane asks for them with a small picture)
+    public static CodecPic Load(string path, int maxSide, bool premultiplied, bool details)
     {
         byte[] data = Util.ReadShared(path);
         var r = new CodecPic { Format = Name(path) + " (Windows codec)", Bytes = data.Length };
@@ -116,7 +119,7 @@ static class WinCodec
             r.Frames = dec.Frames.Count;
             r.W = f.PixelWidth; r.H = f.PixelHeight;
             if (r.W <= 0 || r.H <= 0) throw new FileFormatException("The file holds no picture.");
-            ReadMeta(path, f, r, maxSide <= 0);
+            ReadMeta(path, f, r, details);
             WI.BitmapSource src = f;
             if (maxSide > 0 && Math.Max(r.W, r.H) > maxSide)
                 src = Scaled(data, r.W >= r.H, maxSide) ?? Shrink(f, maxSide);

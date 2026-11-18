@@ -1037,7 +1037,7 @@ sealed partial class MainForm : Form
 
     void UpdatePreview()
     {
-        if (preview == null || !preview.Visible) return;
+        if (preview == null || preview.IsDisposed || !preview.Visible) return;
         int f = grid.FocusIndex;
         List<int> sel = grid.SelectedIndices();
         Item it = f >= 0 && f < grid.Items.Count ? grid.Items[f] : sel.Count > 0 ? grid.Items[sel[0]] : null;
@@ -1048,6 +1048,7 @@ sealed partial class MainForm : Form
             folder = Util.SameDir(d, grid.Dir) ? "(this folder)" : d.Substring(Math.Min(d.Length, grid.Dir.TrimEnd('\\').Length + 1));
         }
         int others = it != null && sel.Count > 1 ? sel.Count - (it.Sel ? 1 : 0) : 0;
+        preview.SetEffects(canvas.ManualEffects, canvas.AutoEffects, canvas.EffectsOff, canvas.PixMode);   // for its badges
         preview.ShowItem(it, grid.MarkOf(it), folder, others);
     }
 
@@ -1163,6 +1164,13 @@ sealed partial class MainForm : Form
         cmpA.ImageChanged += delegate (string p, int i) { BaFollow(cmpB, p); BaMatch(); };
         cmpB.ImageChanged += delegate (string p, int i) { BaFollow(cmpA, p); BaMatch(); };
         cmpB.Resize += delegate { if (beforeAfter) BeginInvoke(new MethodInvoker(BaMatch)); };
+        // a click on a viewer's signal / scanline badge: compare keeps both sides alike, before / after matches sizes again
+        cmpA.EffectsClicked += delegate (int which) { if (comparing && !beforeAfter) SameBadge(cmpA, cmpB, which); };
+        cmpB.EffectsClicked += delegate (int which)
+        {
+            if (beforeAfter) { simFxTouched = true; BaMatch(); }
+            else if (comparing) SameBadge(cmpB, cmpA, which);
+        };
         // retro preview of an animated GIF or WebP: the left side shows the frame the right side shows
         cmpB.FrameShown += delegate (int f) { if (beforeAfter && baSim) cmpA.ShowFrameOf(f); };   // after the right side has fitted itself again
         foreach (Control c in new Control[] { cmpA, cmpB })
@@ -1181,6 +1189,23 @@ sealed partial class MainForm : Form
             cmpB.Simulation = simOpts;
             BaTitle();
         };
+    }
+
+    // side-by-side compare: what a badge click changed on one side, on the other side too
+    static void SameBadge(Canvas from, Canvas to, int which)
+    {
+        switch (which)
+        {
+            case Canvas.BadgeSignal: to.SignalMode = from.SignalMode; break;
+            case Canvas.BadgeScan: to.ScanMode = from.ScanMode; break;
+            case Canvas.BadgeMask: to.MaskMode = from.MaskMode; break;
+            case Canvas.BadgeGlow: to.GlowMode = from.GlowMode; break;
+            case Canvas.BadgeCurve: to.CurveMode = from.CurveMode; break;
+            case Canvas.BadgeTv: to.TvAspect = from.TvAspect; break;
+            case Canvas.BadgePixels: to.PixMode = from.PixMode; break;
+            case Canvas.BadgeAuto: to.AutoEffects = from.AutoEffects; break;
+            case Canvas.BadgeOff: to.EffectsOff = from.EffectsOff; break;
+        }
     }
 
     // the crop position (0..1 each way) from where the frame is on the left picture
@@ -1627,6 +1652,7 @@ sealed partial class MainForm : Form
         foreach (Canvas c in new[] { cmpA, cmpB }) { c.FitLock = true; c.PixMode = canvas.PixMode; c.Checker = canvas.Checker; c.InfoOn = canvas.InfoOn; }
         if (simulate) { SyncSimBar(); cmpB.Simulation = simOpts; }
         cmpA.FollowFrames = simulate;                      // an animation: the left side shows the right side's frame
+        cmpA.ShowBadges = false;                           // the plain side: its effects stay off
         cmpA.Open(baList, at);
         cmpB.Open(baList, at);
         if (simulate)
@@ -1745,6 +1771,7 @@ sealed partial class MainForm : Form
         cmpA.Release(); cmpB.Release();
         cmpB.Simulation = null;
         cmpA.FollowFrames = false;
+        cmpA.ShowBadges = true;
         cmpA.CropFrame = RectangleF.Empty;
         baSim = false;
         cmpA.FitLock = false; cmpB.FitLock = false;        // side-by-side compare keeps its own behaviour
@@ -1808,7 +1835,7 @@ sealed partial class MainForm : Form
         else { browse.Visible = true; status.Visible = true; canvas.Visible = false; }
         ResumeLayout(true);
         if (v) canvas.Focus();
-        else { grid.Focus(); lastPane = grid; Text = (grid.Dir ?? "RetroGleek") + " - RetroGleek"; UpdateStatus(); }
+        else { grid.Focus(); lastPane = grid; Text = (grid.Dir ?? "RetroGleek") + " - RetroGleek"; UpdateStatus(); UpdatePreview(); }
     }
 
     void UpdateStatus()

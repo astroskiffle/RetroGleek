@@ -455,6 +455,476 @@ sealed class Canvas : Control
     readonly ImageAttributes ia = new ImageAttributes();
     readonly Font font = new Font("Segoe UI", 9f);
     readonly Font big = new Font("Segoe UI", 12f);
+    readonly Font tiny = new Font("Segoe UI", 7.5f);
+
+    // K, C, M, W and U (and a click on their badges)
+    void CycleScan()
+    {
+        ScanMode = (scanMode + 1) % 4;
+        Flash("Scanlines: " + ScanNames[scanMode] + (scanMode > 0 && HasImage && cur.Note == null ? " (retro pictures only)" : scanMode > 0 ? " (shown from about 300%)" : ""));
+    }
+
+    void ToggleTv()
+    {
+        TvAspect = !tvAspect;
+        if (!tvAspect) Flash("True TV aspect off (pixels as RECOIL hands them over)");
+        else if (HasImage && cur.Geom != null && cur.Geom.XPpm > 0)
+            Flash("True TV aspect on: each pixel " + cur.Geom.PixelAspect.ToString("0.00") + " wide : 1 high, as on a real TV");
+        else Flash("True TV aspect on (not known for this picture: shown unchanged)");
+    }
+
+    void CycleMask()
+    {
+        MaskMode = (maskMode + 1) % 4;
+        Flash("Phosphor mask: " + MaskNames[maskMode] + (maskMode > 0 && HasImage && cur.Note == null ? " (retro pictures only)" : maskMode > 0 ? " (shown from 200%)" : ""));
+    }
+
+    void CycleGlow()
+    {
+        GlowMode = (glowMode + 1) % 3;
+        Flash("Glow: " + GlowNames[glowMode] + (glowMode > 0 && HasImage && cur.Note == null ? " (retro pictures only)" : ""));
+    }
+
+    void CycleCurve()
+    {
+        CurveMode = (curveMode + 1) % 3;
+        Flash("Screen curvature: " + CurveNames[curveMode] + (curveMode > 0 && HasImage && cur.Note == null ? " (retro pictures only)" : curveMode > 0 ? " (off at 800% and above)" : ""));
+    }
+
+    void CycleSignal()
+    {
+        SignalMode = (signalMode + 1) % 3;
+        Flash("Video signal: " + SignalNames[signalMode] + (signalMode > 0 && HasImage && cur.Note == null ? " (retro pictures only)"
+              : signalMode == 1 ? " (colours soften a little)" : signalMode == 2 ? " (dithering blends, as on a TV)" : ""));
+    }
+
+    // ---- effect badges: small pictures above the info bar, on retro pictures while the info bar is on (I), in two
+    // rows. Lower row, the screen: the video signal's cable (an RGB / SCART plug, the round S-Video plug, the yellow
+    // composite plug), the scanlines (a little screen with no, light, medium or strong lines), the phosphor mask
+    // (grille stripes, slots or dots), the glow (a light with no, a soft or a strong halo), the curvature (a flat or
+    // bulging screen). Upper row, the picture: True TV aspect (a square pixel, or the TV's pixel shape), the enlarged
+    // pixels (crisp, sharp or smooth) and automatic effects (a monitor, lit when automatic chose the screen). With
+    // the effects off (O), one badge says so instead and a click shows them again. A click on a badge does what its
+    // key does (C, K, M, W, U, T, N, A, O). Drawn with GDI+, not font symbols. A badge is dimmed while its effect is
+    // set but not shown (too small, too large or turned sideways). ShowBadges false hides them (before / after's
+    // plain left side). EffectsClicked(badge): one was clicked (the main window keeps compare and before / after in step).
+    public event Action<int> EffectsClicked;
+    public bool ShowBadges = true;
+    public const int BadgeSignal = 0, BadgeScan = 1, BadgeMask = 2, BadgeGlow = 3, BadgeCurve = 4, BadgeTv = 5, BadgePixels = 6, BadgeAuto = 7, BadgeOff = 8;
+    const int BadgeCount = 9;
+    readonly Rectangle[] badges = new Rectangle[BadgeCount];   // where they were drawn last (empty: not shown)
+    int badgeHot = -1;                                     // the one under the pointer
+    static readonly string[] BadgeTips =
+    {
+        "Click: next video signal (C)", "Click: next scanlines (K)", "Click: next phosphor mask (M)", "Click: next glow (W)", "Click: next curvature (U)",
+        "Click: True TV aspect on / off (T)", "Click: crisp, sharp or smooth pixels (N)", "Click: automatic effects on / off (A)", "Click: show the screen effects (O)"
+    };
+
+    bool BadgesShown { get { return ShowBadges && showInfo && HasImage && cur.Note != null; } }
+
+    int BadgeAt(Point p)
+    {
+        for (int i = 0; i < BadgeCount; i++) if (badges[i].Contains(p)) return i;
+        return -1;
+    }
+
+    void ClearBadges() { for (int i = 0; i < BadgeCount; i++) badges[i] = Rectangle.Empty; }
+
+    void CycleBadge(int which)
+    {
+        switch (which)
+        {
+            case BadgeSignal: CycleSignal(); break;
+            case BadgeScan: CycleScan(); break;
+            case BadgeMask: CycleMask(); break;
+            case BadgeGlow: CycleGlow(); break;
+            case BadgeCurve: CycleCurve(); break;
+            case BadgeTv: ToggleTv(); break;
+            case BadgePixels: CyclePixMode(); break;
+            case BadgeAuto: ToggleAuto(); break;
+            case BadgeOff: EffectsOff = false; Flash("Screen effects on"); break;
+        }
+    }
+
+    void DrawBadges(Graphics g)
+    {
+        ClearBadges();
+        if (!BadgesShown) return;
+        float k = g.DpiY / 96f;
+        int barH = (int)(font.GetHeight(g) + 10 * k);       // as DrawInfo
+        int w = Util.S(64), h = Util.S(54), gap = Util.S(6), m = Util.S(8);
+        int right = ClientSize.Width - m;
+        int yLow = ViewH - barH - m - h, yHigh = yLow - gap - h;
+        if (yLow < m) return;                               // no room
+        if (fxOff)
+            badges[BadgeOff] = new Rectangle(right - w, yLow, w, h);
+        else
+        {
+            if (right - 5 * w - 4 * gap < m) return;       // no room for the lower row: none at all
+            for (int i = 0; i < 5; i++) badges[i] = new Rectangle(right - (5 - i) * w - (4 - i) * gap, yLow, w, h);
+            if (yHigh >= m)
+                for (int i = 0; i < 3; i++) badges[BadgeTv + i] = new Rectangle(right - (3 - i) * w - (2 - i) * gap, yHigh, w, h);
+        }
+        SmoothingMode oldS = g.SmoothingMode;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+        MachineInfo mi = MachineInfo.For(cur.Note);         // the computer badge: left of the upper row (or of "effects off")
+        if (mi != null)
+        {
+            int mw = Math.Max(2 * w + gap, MachineWidth(g, mi));
+            int mx = fxOff ? right - w - gap - mw : yHigh >= m ? right - 3 * w - 3 * gap - mw : -1;
+            if (mx >= m) DrawMachine(g, new Rectangle(mx, fxOff ? yLow : yHigh, mw, h), mi);
+        }
+        int top = yLow;
+        for (int i = 0; i < BadgeCount; i++)
+            if (!badges[i].IsEmpty) { DrawBadge(g, badges[i], i); top = Math.Min(top, badges[i].Y); }
+        if (badgeHot >= 0 && badgeHot < BadgeCount && !badges[badgeHot].IsEmpty)   // what a click does
+        {
+            string tip = BadgeTips[badgeHot];
+            if (badgeHot == BadgeAuto && autoFx && autoChoice != null) tip = "Automatic: " + autoChoice.Name + ".  Click: your own effects (A)";
+            SizeF ts = g.MeasureString(tip, font);
+            var tr = new RectangleF(right - ts.Width - 8 * k, top - ts.Height - 8 * k, ts.Width + 8 * k, ts.Height + 4 * k);
+            using (var tb = new SolidBrush(Color.FromArgb(200, 0, 0, 0))) g.FillRectangle(tb, tr);
+            g.DrawString(tip, font, Brushes.Gainsboro, tr.X + 4 * k, tr.Y + 2 * k);
+        }
+        g.SmoothingMode = oldS;
+    }
+
+    static GraphicsPath Rounded(RectangleF r, float rad)
+    {
+        var p = new GraphicsPath();
+        float d = rad * 2;
+        p.AddArc(r.X, r.Y, d, d, 180, 90); p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+        p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90); p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+        p.CloseFigure();
+        return p;
+    }
+
+    void DrawBadge(Graphics g, Rectangle r, int which)
+    {
+        bool known = cur.Geom != null && cur.Geom.XPpm > 0 && cur.Geom.YPpm > 0;
+        PaintBadge(g, r, which, badgeHot == which, tiny, new BadgeState
+        {
+            Signal = signalMode, Scan = scanMode, ScanDim = ScanWanted && !ScanShown, Mask = maskMode, MaskDim = MaskWanted && !MaskShown,
+            Glow = glowMode, Curve = curveMode, CurveDim = CurveWanted && !CurveShown, Tv = tvAspect, TvKnown = known,
+            Aspect = known ? cur.Geom.PixelAspect : 1.0, PixMode = pixMode, Auto = autoFx
+        });
+    }
+
+    // One badge, drawn from st (also used by the preview pane, where the badges can't be clicked)
+    internal static void PaintBadge(Graphics g, Rectangle r, int which, bool hot, Font tiny, BadgeState st)
+    {
+        using (GraphicsPath bg = Rounded(r, Util.S(6)))
+        {
+            using (var b = new SolidBrush(Color.FromArgb(hot ? 215 : 165, 0, 0, 0))) g.FillPath(b, bg);
+            using (var pen = new Pen(hot ? Color.FromArgb(60, 130, 230) : Color.FromArgb(90, 255, 255, 255), Math.Max(1f, Util.K))) g.DrawPath(pen, bg);
+        }
+        int labelH = tiny.Height + Util.S(2);
+        var ir = new RectangleF(r.X + Util.S(8), r.Y + Util.S(5), r.Width - Util.S(16), r.Height - labelH - Util.S(8));
+        string label;
+        switch (which)
+        {
+            case 0:
+                DrawCable(g, ir, st.Signal);
+                label = st.Signal == 0 ? "RGB" : st.Signal == 1 ? "S-Video" : "Composite";
+                break;
+            case 1:
+                DrawScreen(g, ir, st.Scan, st.ScanDim);              // too small to show the lines, or turned sideways
+                label = st.Scan == 0 ? "No lines" : st.Scan == 1 ? "Light" : st.Scan == 2 ? "Medium" : "Strong";
+                break;
+            case 2:
+                DrawMask(g, ir, st.Mask, st.MaskDim);                // below 200%, or turned sideways
+                label = st.Mask == 0 ? "No mask" : st.Mask == 1 ? "Grille" : st.Mask == 2 ? "Slot" : "Dot";
+                break;
+            case 3:
+                DrawGlow(g, ir, st.Glow);
+                label = st.Glow == 0 ? "No glow" : st.Glow == 1 ? "Soft" : "Strong";
+                break;
+            case 4:
+                DrawCurve(g, ir, st.Curve, st.CurveDim);             // off at 800% and above
+                label = st.Curve == 0 ? "Flat" : st.Curve == 1 ? "Slight" : "Strong";
+                break;
+            case 5:
+                DrawPixelShape(g, ir, st.Tv ? st.Aspect : 1.0, st.Tv && !st.TvKnown);
+                label = !st.Tv ? "Square" : st.TvKnown ? "TV " + st.Aspect.ToString("0.00") : "TV (n/a)";
+                break;
+            case 6:
+            {
+                int eff = st.PixMode != 0 ? st.PixMode : 3;           // automatic: retro pictures are sharp
+                DrawPixels(g, ir, eff);
+                string n = eff == 1 ? "Crisp" : eff == 3 ? "Sharp" : "Smooth";
+                label = st.PixMode == 0 ? "Auto " + n.ToLowerInvariant() : n;
+                break;
+            }
+            case 7:
+                DrawMonitor(g, ir, st.Auto, false);
+                label = st.Auto ? "Auto" : "Own";
+                break;
+            default:
+                DrawMonitor(g, ir, false, true);
+                label = "Effects off";
+                break;
+        }
+        using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+            g.DrawString(label, tiny, Brushes.Gainsboro, new RectangleF(r.X, r.Bottom - labelH - Util.S(2), r.Width, labelH), sf);
+    }
+
+    // The computer badge (not clickable): maker and flags, then the model, then year and palette size
+    readonly Font tinyBold = new Font("Segoe UI", 7.5f, FontStyle.Bold);
+
+    int MachineWidth(Graphics g, MachineInfo mi) { return MachineBadgeWidth(g, mi, tiny, tinyBold); }
+
+    void DrawMachine(Graphics g, Rectangle r, MachineInfo mi) { PaintMachine(g, r, mi, tiny, tinyBold); }
+
+    internal static int MachineBadgeWidth(Graphics g, MachineInfo mi, Font tiny, Font tinyBold)
+    {
+        int flags = mi.FlagList.Length * (Util.S(17) + Util.S(3));
+        float a = g.MeasureString(mi.Maker, tinyBold).Width + flags, b = g.MeasureString(mi.Model, tiny).Width, c = g.MeasureString(mi.Facts, tiny).Width;
+        return (int)Math.Ceiling(Math.Max(a, Math.Max(b, c))) + Util.S(18);
+    }
+
+    internal static void PaintMachine(Graphics g, Rectangle r, MachineInfo mi, Font tiny, Font tinyBold)
+    {
+        using (GraphicsPath bg = Rounded(r, Util.S(6)))
+        {
+            using (var b = new SolidBrush(Color.FromArgb(165, 0, 0, 0))) g.FillPath(b, bg);
+            using (var pen = new Pen(Color.FromArgb(90, 255, 255, 255), Math.Max(1f, Util.K))) g.DrawPath(pen, bg);
+        }
+        float lh = tiny.GetHeight(g), x = r.X + Util.S(8), y = r.Y + (r.Height - 3 * lh) / 2;
+        float fw = Util.S(17), fh = Util.S(11), fx = r.Right - Util.S(8) - fw;
+        string[] flags = mi.FlagList;
+        for (int i = flags.Length - 1; i >= 0; i--, fx -= fw + Util.S(3))
+            MachineInfo.DrawFlag(g, new RectangleF(fx, y + (lh - fh) / 2, fw, fh), flags[i]);
+        using (var sf = new StringFormat(StringFormatFlags.NoWrap) { Trimming = StringTrimming.EllipsisCharacter })
+        {
+            g.DrawString(mi.Maker, tinyBold, Brushes.White, new RectangleF(x, y, fx + fw - x, lh), sf);
+            g.DrawString(mi.Model, tiny, Brushes.Gainsboro, new RectangleF(x, y + lh, r.Right - Util.S(8) - x, lh), sf);
+            g.DrawString(mi.Facts, tiny, Brushes.Silver, new RectangleF(x, y + 2 * lh, r.Right - Util.S(8) - x, lh), sf);
+        }
+    }
+
+    // one pixel's shape: a square, or the TV's (aspect = width : height, drawn more pronounced so the difference shows)
+    static void DrawPixelShape(Graphics g, RectangleF ir, double aspect, bool dim)
+    {
+        float s = Math.Min(ir.Width, ir.Height) * 0.8f, cx = ir.X + ir.Width / 2, cy = ir.Y + ir.Height / 2;
+        int a = dim ? 110 : 255;
+        double shown = Math.Max(0.6, Math.Min(1.4, 1 + (aspect - 1) * 4));
+        float pw = (float)(s * Math.Min(1.0, shown)), ph = (float)(s * Math.Min(1.0, 1 / shown));
+        using (var guide = new Pen(Color.FromArgb(a / 2, 175, 180, 190), Math.Max(1f, s / 24)) { DashStyle = DashStyle.Dash })
+            g.DrawRectangle(guide, cx - s / 2, cy - s / 2, s, s);       // a square, for comparison
+        using (var b = new SolidBrush(Color.FromArgb(a, 240, 150, 60))) g.FillRectangle(b, cx - pw / 2, cy - ph / 2, pw, ph);
+    }
+
+    static Bitmap checker2;                               // 2 x 2 pixels of two colours, enlarged for the pixels badge
+
+    // a 2 x 2 block of pixels enlarged crisp (hard edges), sharp (hard, with soft seams) or smooth (blurred)
+    static void DrawPixels(Graphics g, RectangleF ir, int mode)
+    {
+        if (checker2 == null)
+        {
+            var b = new Bitmap(2, 2, PixelFormat.Format32bppArgb);
+            b.SetPixel(0, 0, Color.FromArgb(240, 150, 60)); b.SetPixel(1, 1, Color.FromArgb(240, 150, 60));
+            b.SetPixel(1, 0, Color.FromArgb(60, 110, 200)); b.SetPixel(0, 1, Color.FromArgb(60, 110, 200));
+            checker2 = b;
+        }
+        float s = Math.Min(ir.Width, ir.Height) * 0.9f, x = ir.X + (ir.Width - s) / 2, y = ir.Y + (ir.Height - s) / 2;
+        InterpolationMode oi = g.InterpolationMode;
+        PixelOffsetMode op = g.PixelOffsetMode;
+        g.PixelOffsetMode = PixelOffsetMode.Half;
+        using (var ia = new ImageAttributes())
+        {
+            ia.SetWrapMode(WrapMode.TileFlipXY);
+            g.InterpolationMode = mode == 2 ? InterpolationMode.HighQualityBilinear : InterpolationMode.NearestNeighbor;
+            g.DrawImage(checker2, new Rectangle((int)x, (int)y, (int)s, (int)s), 0, 0, 2, 2, GraphicsUnit.Pixel, ia);
+        }
+        if (mode == 3)                                      // sharp: only the seams between pixels are blended
+            using (var seam = new Pen(Color.FromArgb(160, 150, 130, 130), Math.Max(1.5f, s / 14)))
+            {
+                g.DrawLine(seam, x + s / 2, y, x + s / 2, y + s);
+                g.DrawLine(seam, x, y + s / 2, x + s, y + s / 2);
+            }
+        g.InterpolationMode = oi;
+        g.PixelOffsetMode = op;
+        using (var pen = new Pen(Color.FromArgb(175, 180, 190), Math.Max(1f, s / 24))) g.DrawRectangle(pen, x, y, s, s);
+    }
+
+    // a small monitor: lit when automatic effects chose the screen, dark for your own, crossed out when effects are off
+    static void DrawMonitor(Graphics g, RectangleF ir, bool lit, bool crossed)
+    {
+        float w = Math.Min(ir.Width, ir.Height * 1.3f), h = w / 1.3f, x = ir.X + (ir.Width - w) / 2, y = ir.Y + (ir.Height - h) / 2;
+        float sh = h * 0.78f;
+        var screen = new RectangleF(x, y, w, sh);
+        using (GraphicsPath p = Rounded(screen, Math.Max(2f, sh / 7)))
+        {
+            using (var b = lit ? (Brush)new LinearGradientBrush(screen, Color.FromArgb(110, 200, 255), Color.FromArgb(40, 110, 190), LinearGradientMode.Vertical)
+                               : new SolidBrush(Color.FromArgb(45, 48, 55)))
+                g.FillPath(b, p);
+            using (var pen = new Pen(Color.FromArgb(175, 180, 190), Math.Max(1.5f, h / 12))) g.DrawPath(pen, p);
+        }
+        using (var stand = new SolidBrush(Color.FromArgb(175, 180, 190)))
+        {
+            g.FillRectangle(stand, x + w * 0.44f, y + sh, w * 0.12f, h * 0.12f);
+            g.FillRectangle(stand, x + w * 0.3f, y + sh + h * 0.12f, w * 0.4f, h * 0.08f);
+        }
+        if (lit)
+            using (var f = new Font("Segoe UI", Math.Max(6f, sh * 0.42f), FontStyle.Bold, GraphicsUnit.Pixel))
+            using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+                g.DrawString("A", f, Brushes.White, screen, sf);
+        if (crossed)
+            using (var pen = new Pen(Color.FromArgb(255, 140, 90), Math.Max(2f, h / 9)))
+                g.DrawLine(pen, x + w * 0.15f, y + sh * 0.85f, x + w * 0.85f, y + sh * 0.15f);
+    }
+
+    // the phosphors, enlarged: aperture grille stripes, staggered slots, or dots (none: a dark square)
+    static void DrawMask(Graphics g, RectangleF ir, int mode, bool dim)
+    {
+        float s = Math.Min(ir.Width, ir.Height), x = ir.X + (ir.Width - s) / 2, y = ir.Y + (ir.Height - s) / 2;
+        var sq = new RectangleF(x, y, s, s);
+        int a = dim ? 110 : 255;
+        using (GraphicsPath p = Rounded(sq, Math.Max(2f, s / 8)))
+        {
+            using (var b = new SolidBrush(Color.FromArgb(a, 20, 20, 24))) g.FillPath(b, p);
+            if (mode > 0)
+            {
+                GraphicsState st = g.Save();
+                g.SetClip(p, CombineMode.Intersect);
+                Color[] rgb = { Color.FromArgb(a, 230, 60, 60), Color.FromArgb(a, 60, 210, 80), Color.FromArgb(a, 70, 120, 245) };
+                float col = s / 7.5f;                       // one phosphor's width
+                if (mode == 1)                              // aperture grille: unbroken stripes
+                {
+                    for (int i = 0; i * col < s; i++)
+                        using (var b = new SolidBrush(rgb[i % 3])) g.FillRectangle(b, x + i * col + col * 0.12f, y, col * 0.76f, s);
+                }
+                else if (mode == 2)                         // slot mask: short slots, every other triad half a slot lower
+                {
+                    float slot = s / 3.2f;
+                    for (int i = 0; i * col < s; i++)
+                    {
+                        float off = ((i / 3) & 1) == 0 ? 0 : slot / 2;
+                        using (var b = new SolidBrush(rgb[i % 3]))
+                            for (float sy = y - slot + off; sy < y + s; sy += slot)
+                                g.FillRectangle(b, x + i * col + col * 0.12f, sy + slot * 0.1f, col * 0.76f, slot * 0.8f);
+                    }
+                }
+                else                                        // dot mask: round dots in triangles
+                {
+                    float d = s / 4.6f;
+                    for (int row = 0; row * d * 0.9f < s + d; row++)
+                        for (int c = 0; c * d < s + d; c++)
+                        {
+                            float cx = x + c * d + ((row & 1) == 0 ? 0 : d / 2), cy = y + row * d * 0.87f;
+                            using (var b = new SolidBrush(rgb[(c + row * 2) % 3])) g.FillEllipse(b, cx - d * 0.4f, cy - d * 0.4f, d * 0.8f, d * 0.8f);
+                        }
+                }
+                g.Restore(st);
+            }
+            using (var pen = new Pen(Color.FromArgb(a, 175, 180, 190), Math.Max(1.5f, s / 14))) g.DrawPath(pen, p);
+        }
+    }
+
+    // a bright light with no, a soft or a strong halo
+    static void DrawGlow(Graphics g, RectangleF ir, int mode)
+    {
+        float cx = ir.X + ir.Width / 2, cy = ir.Y + ir.Height / 2, s = Math.Min(ir.Width, ir.Height);
+        if (mode > 0)
+        {
+            float hr = s * (mode == 1 ? 0.42f : 0.56f);
+            using (var path = new GraphicsPath())
+            {
+                path.AddEllipse(cx - hr, cy - hr, hr * 2, hr * 2);
+                using (var pb = new PathGradientBrush(path))
+                {
+                    pb.CenterColor = Color.FromArgb(mode == 1 ? 150 : 230, 255, 245, 210);
+                    pb.SurroundColors = new[] { Color.FromArgb(0, 255, 245, 210) };
+                    g.FillPath(pb, path);
+                }
+            }
+        }
+        float d = s * 0.32f;
+        using (var b = new SolidBrush(mode == 0 ? Color.FromArgb(150, 150, 150) : Color.FromArgb(255, 255, 250, 235))) g.FillEllipse(b, cx - d / 2, cy - d / 2, d, d);
+    }
+
+    // a screen whose sides are straight (flat) or bulge a little or a lot, with darker corners when curved
+    static void DrawCurve(Graphics g, RectangleF ir, int mode, bool dim)
+    {
+        float w = Math.Min(ir.Width, ir.Height * 1.4f), h = w / 1.4f, x = ir.X + (ir.Width - w) / 2, y = ir.Y + (ir.Height - h) / 2;
+        int a = dim ? 110 : 255;
+        float bx = mode == 0 ? 0 : w * (mode == 1 ? 0.06f : 0.12f), by = mode == 0 ? 0 : h * (mode == 1 ? 0.07f : 0.14f);
+        using (var p = new GraphicsPath())
+        {
+            // each side a curve bowing outwards by bx / by (straight lines when flat)
+            p.AddBezier(x, y, x + w / 3, y - by, x + w * 2 / 3, y - by, x + w, y);
+            p.AddBezier(x + w, y, x + w + bx, y + h / 3, x + w + bx, y + h * 2 / 3, x + w, y + h);
+            p.AddBezier(x + w, y + h, x + w * 2 / 3, y + h + by, x + w / 3, y + h + by, x, y + h);
+            p.AddBezier(x, y + h, x - bx, y + h * 2 / 3, x - bx, y + h / 3, x, y);
+            p.CloseFigure();
+            using (var pb = new PathGradientBrush(p))
+            {
+                pb.CenterPoint = new PointF(x + w / 2, y + h / 2);
+                pb.CenterColor = Color.FromArgb(a, 70, 150, 200);
+                pb.SurroundColors = new[] { mode == 0 ? Color.FromArgb(a, 55, 125, 175) : Color.FromArgb(a, 18, 45, 80) };
+                g.FillPath(pb, p);
+            }
+            using (var pen = new Pen(Color.FromArgb(a, 175, 180, 190), Math.Max(1.5f, h / 12))) g.DrawPath(pen, p);
+        }
+    }
+
+    // the cable's plug: SCART with red, green and blue pins (RGB), the round 4-pin mini-DIN (S-Video), the yellow RCA (composite)
+    static void DrawCable(Graphics g, RectangleF ir, int mode)
+    {
+        float cx = ir.X + ir.Width / 2, cy = ir.Y + ir.Height / 2, s = Math.Min(ir.Width, ir.Height);
+        if (mode == 0)
+        {
+            float w = s * 1.35f, h = s * 0.62f, x = cx - w / 2, y = cy - h / 2, cut = h * 0.35f;
+            var pts = new[] { new PointF(x, y), new PointF(x + w, y), new PointF(x + w, y + h - cut), new PointF(x + w - cut, y + h), new PointF(x, y + h) };
+            using (var b = new SolidBrush(Color.FromArgb(170, 175, 185))) g.FillPolygon(b, pts);
+            using (var pen = new Pen(Color.FromArgb(90, 95, 105), Math.Max(1f, s / 22))) g.DrawPolygon(pen, pts);
+            Color[] cols = { Color.FromArgb(235, 60, 60), Color.FromArgb(60, 200, 80), Color.FromArgb(70, 120, 245) };
+            float d = h * 0.42f;
+            for (int i = 0; i < 3; i++)
+                using (var b = new SolidBrush(cols[i])) g.FillEllipse(b, x + w * (0.2f + 0.27f * i) - d / 2, cy - d / 2, d, d);
+        }
+        else if (mode == 1)
+        {
+            float d = s * 0.92f;
+            using (var b = new SolidBrush(Color.FromArgb(55, 55, 60))) g.FillEllipse(b, cx - d / 2, cy - d / 2, d, d);
+            using (var pen = new Pen(Color.FromArgb(175, 180, 190), Math.Max(1.5f, s / 12))) g.DrawEllipse(pen, cx - d / 2, cy - d / 2, d, d);
+            float p = d * 0.14f;
+            PointF[] pins = { new PointF(cx - d * 0.2f, cy - d * 0.12f), new PointF(cx + d * 0.2f, cy - d * 0.12f), new PointF(cx - d * 0.26f, cy + d * 0.16f), new PointF(cx + d * 0.26f, cy + d * 0.16f) };
+            foreach (PointF q in pins) g.FillEllipse(Brushes.WhiteSmoke, q.X - p / 2, q.Y - p / 2, p, p);
+            using (var b = new SolidBrush(Color.FromArgb(175, 180, 190))) g.FillRectangle(b, cx - d * 0.09f, cy + d * 0.28f, d * 0.18f, d * 0.12f);   // the key
+        }
+        else
+        {
+            float d = s * 0.92f, inner = d * 0.5f, pin = d * 0.16f;
+            using (var b = new SolidBrush(Color.FromArgb(245, 205, 40))) g.FillEllipse(b, cx - d / 2, cy - d / 2, d, d);
+            using (var b = new SolidBrush(Color.FromArgb(60, 55, 30))) g.FillEllipse(b, cx - inner / 2, cy - inner / 2, inner, inner);
+            using (var b = new SolidBrush(Color.FromArgb(220, 220, 225))) g.FillEllipse(b, cx - pin / 2, cy - pin / 2, pin, pin);
+        }
+    }
+
+    // a little screen with its scanlines: none, light, medium or strong (dim: wanted but not shown at this size)
+    static void DrawScreen(Graphics g, RectangleF ir, int mode, bool dim)
+    {
+        float w = Math.Min(ir.Width, ir.Height * 1.4f), h = w / 1.4f, x = ir.X + (ir.Width - w) / 2, y = ir.Y + (ir.Height - h) / 2;
+        var sr = new RectangleF(x, y, w, h);
+        int a = dim ? 110 : 255;
+        using (GraphicsPath p = Rounded(sr, Math.Max(2f, h / 7)))
+        {
+            using (var b = new LinearGradientBrush(sr, Color.FromArgb(a, 70, 150, 200), Color.FromArgb(a, 30, 70, 120), LinearGradientMode.Vertical)) g.FillPath(b, p);
+            if (mode > 0)
+            {
+                GraphicsState st = g.Save();
+                g.SetClip(p, CombineMode.Intersect);
+                float step = Math.Max(3f, h / 6f), thick = step * (mode == 1 ? 0.3f : mode == 2 ? 0.45f : 0.6f);
+                int la = (mode == 1 ? 110 : mode == 2 ? 170 : 230) * a / 255;
+                using (var lb = new SolidBrush(Color.FromArgb(la, 0, 0, 0)))
+                    for (float ly = y + step - thick; ly < y + h; ly += step) g.FillRectangle(lb, x, ly, w, thick);
+                g.Restore(st);
+            }
+            using (var pen = new Pen(Color.FromArgb(a, 175, 180, 190), Math.Max(1.5f, h / 12))) g.DrawPath(pen, p);
+        }
+    }
 
     public event Action<string, int> ImageChanged;
     public string Want { get { return want; } }
@@ -606,22 +1076,15 @@ sealed class Canvas : Control
             case Keys.P: if (ctrl) break; ToggleAnimPause(); return true;
             case Keys.T:
                 if (ctrl) break;
-                TvAspect = !tvAspect;
-                if (!tvAspect) Flash("True TV aspect off (pixels as RECOIL hands them over)");
-                else if (HasImage && cur.Geom != null && cur.Geom.XPpm > 0)
-                    Flash("True TV aspect on: each pixel " + cur.Geom.PixelAspect.ToString("0.00") + " wide : 1 high, as on a real TV");
-                else Flash("True TV aspect on (not known for this picture: shown unchanged)");
+                ToggleTv();
                 return true;
             case Keys.K:
                 if (ctrl) break;
-                ScanMode = (scanMode + 1) % 4;
-                Flash("Scanlines: " + ScanNames[scanMode] + (scanMode > 0 && HasImage && cur.Note == null ? " (retro pictures only)" : scanMode > 0 ? " (shown from about 300%)" : ""));
+                CycleScan();
                 return true;
             case Keys.C:
                 if (ctrl) break;
-                SignalMode = (signalMode + 1) % 3;
-                Flash("Video signal: " + SignalNames[signalMode] + (signalMode > 0 && HasImage && cur.Note == null ? " (retro pictures only)"
-                      : signalMode == 1 ? " (colours soften a little)" : signalMode == 2 ? " (dithering blends, as on a TV)" : ""));
+                CycleSignal();
                 return true;
             case Keys.J:
                 if (ctrl) break;
@@ -634,13 +1097,11 @@ sealed class Canvas : Control
                 return true;
             case Keys.U:
                 if (ctrl) break;
-                CurveMode = (curveMode + 1) % 3;
-                Flash("Screen curvature: " + CurveNames[curveMode] + (curveMode > 0 && HasImage && cur.Note == null ? " (retro pictures only)" : curveMode > 0 ? " (off at 800% and above)" : ""));
+                CycleCurve();
                 return true;
             case Keys.W:
                 if (ctrl) break;
-                GlowMode = (glowMode + 1) % 3;
-                Flash("Glow: " + GlowNames[glowMode] + (glowMode > 0 && HasImage && cur.Note == null ? " (retro pictures only)" : ""));
+                CycleGlow();
                 return true;
             case Keys.A:
                 if (ctrl) break;
@@ -653,8 +1114,7 @@ sealed class Canvas : Control
                 return true;
             case Keys.M:
                 if (ctrl) break;
-                MaskMode = (maskMode + 1) % 4;
-                Flash("Phosphor mask: " + MaskNames[maskMode] + (maskMode > 0 && HasImage && cur.Note == null ? " (retro pictures only)" : maskMode > 0 ? " (shown from 200%)" : ""));
+                CycleMask();
                 return true;
             case Keys.Oemcomma: StepFrame(-1); return true;
             case Keys.OemPeriod: StepFrame(1); return true;
@@ -1167,6 +1627,7 @@ sealed class Canvas : Control
     {
         Graphics g = e.Graphics;
         g.Clear(Bg);
+        ClearBadges();                                     // drawn again below when they are shown
 
         if (StripShown) g.SetClip(new Rectangle(0, 0, ClientSize.Width, ViewH));
         if (HasImage)
@@ -1201,6 +1662,7 @@ sealed class Canvas : Control
             if (!crop.IsEmpty) DrawCropFrame(g);
             if (loupe && mouseIn && !dragging) DrawLoupe(g, hov, hx, hy);
             if (showInfo) DrawInfo(g, hov, hx, hy);
+            DrawBadges(g);
         }
 
         if (notice != null)
@@ -1938,6 +2400,14 @@ sealed class Canvas : Control
             if (e.Button == MouseButtons.Left && hit >= 0 && hit != idx) GoTo(hit);
             return;
         }
+        int badge = e.Button == MouseButtons.Left ? BadgeAt(e.Location) : -1;
+        if (badge >= 0)                                    // a badge: the next signal / scanlines
+        {
+            CycleBadge(badge);
+            var eh = EffectsClicked;
+            if (eh != null) eh(badge);
+            return;
+        }
         if (e.Button == MouseButtons.Left && HasImage && !crop.IsEmpty)     // retro preview: move the crop frame
         {
             PointF at = UprightAt(e.Location);
@@ -1965,7 +2435,19 @@ sealed class Canvas : Control
     {
         base.OnMouseMove(e);
         if (cropDrag) { MoveCrop(UprightAt(e.Location)); return; }
-        if (!dragging) { UpdateHover(e.Location); if (loupe) Invalidate(); return; }
+        if (!dragging)
+        {
+            int hot = BadgeAt(e.Location);
+            if (hot != badgeHot)
+            {
+                badgeHot = hot;
+                Cursor = hot >= 0 ? Cursors.Hand : Cursors.Default;
+                Invalidate();
+            }
+            UpdateHover(e.Location);
+            if (loupe) Invalidate();
+            return;
+        }
         px += e.X - last.X; py += e.Y - last.Y;
         last = e.Location;
         Clamp(); Interact();
@@ -2205,6 +2687,7 @@ sealed class Canvas : Control
     {
         base.OnMouseLeave(e);
         mouseIn = false; lhx = lhy = -2;
+        if (badgeHot >= 0) { badgeHot = -1; Cursor = Cursors.Default; Invalidate(); }
         InvalidateReadout();
     }
 
@@ -2225,6 +2708,198 @@ sealed class Canvas : Control
     {
         base.OnMouseDoubleClick(e);
         if (!HasImage || (StripShown && e.Y >= ClientSize.Height - StripH) || !crop.IsEmpty) return;   // the crop frame: no zoom
+        if (BadgeAt(e.Location) >= 0) return;             // a quick second click on a badge just cycles again
         if (Math.Abs(zoom - 1) < 1e-6) SetFit(2); else ZoomTo(1, e.X, e.Y);
     }
+}
+
+// The computer badge's facts: who made the machine a retro picture belongs to, where it was designed (one or two
+// flags), the year it came out and how many colours its palette offers. Keyed by RECOIL's platform name (cur.Note).
+// Plain maker names only, no logos. A blank year or palette means it isn't known well enough to show. "PC" and
+// "Unknown" have no entry, so no badge. Flags: US, GB, JP, SU (Soviet Union), RU, PL, CZ, ES, PT, BR.
+sealed class MachineInfo
+{
+    public readonly string Maker, Model, Flags;
+    public readonly int Year;
+    public readonly long Colours;
+
+    MachineInfo(string maker, string model, int year, long colours, string flags)
+    {
+        Maker = maker; Model = model; Year = year; Colours = colours; Flags = flags;
+    }
+
+    const long M16 = 16777216;
+
+    static readonly Dictionary<string, MachineInfo> all = new Dictionary<string, MachineInfo>(StringComparer.Ordinal)
+    {
+        { "Amiga", new MachineInfo("Commodore", "Amiga", 1985, 4096, "US") },
+        { "Amiga DCTV", new MachineInfo("Digital Creations", "DCTV for the Amiga", 1991, M16, "US") },
+        { "Amiga HAM-E", new MachineInfo("Black Belt Systems", "HAM-E for the Amiga", 1991, M16, "US") },
+        { "Amstrad CPC", new MachineInfo("Amstrad", "CPC", 1984, 27, "GB") },
+        { "Apple II", new MachineInfo("Apple", "Apple II", 1977, 16, "US") },
+        { "Apple IIe", new MachineInfo("Apple", "Apple IIe", 1983, 16, "US") },
+        { "Apple IIGS", new MachineInfo("Apple", "Apple IIGS", 1986, 4096, "US") },
+        { "Apple Macintosh", new MachineInfo("Apple", "Macintosh", 1984, 2, "US") },
+        { "Atari 8-bit", new MachineInfo("Atari", "400 / 800 / XL / XE", 1979, 256, "US") },
+        { "Atari 8-bit VBXE", new MachineInfo("Atari + VBXE", "8-bit with VBXE", 2006, 2097152, "US PL") },
+        { "Atari Portfolio", new MachineInfo("Atari", "Portfolio", 1989, 2, "US GB") },
+        { "Atari ST", new MachineInfo("Atari", "ST", 1985, 512, "US") },
+        { "Atari STE", new MachineInfo("Atari", "STE", 1989, 4096, "US") },
+        { "Atari TT", new MachineInfo("Atari", "TT030", 1990, 4096, "US") },
+        { "Atari Falcon", new MachineInfo("Atari", "Falcon030", 1992, 262144, "US") },
+        { "BBC Micro", new MachineInfo("Acorn", "BBC Micro", 1981, 8, "GB") },
+        { "Commodore VIC-20", new MachineInfo("Commodore", "VIC-20", 1980, 16, "US") },
+        { "Commodore 16/116/Plus4", new MachineInfo("Commodore", "C16 / 116 / Plus/4", 1984, 121, "US") },
+        { "Commodore 64", new MachineInfo("Commodore", "C64", 1982, 16, "US") },
+        { "Commodore 128", new MachineInfo("Commodore", "C128", 1985, 16, "US") },
+        { "Electronika BK", new MachineInfo("Elektronika", "BK-0010", 1985, 4, "SU") },
+        { "Electronika MC 0515", new MachineInfo("Elektronika", "MS 0515", 0, 0, "SU") },
+        { "FM Towns", new MachineInfo("Fujitsu", "FM Towns", 1989, M16, "JP") },
+        { "HP 48", new MachineInfo("Hewlett-Packard", "HP 48 calculator", 1990, 2, "US") },
+        { "MSX", new MachineInfo("ASCII / Microsoft", "MSX", 1983, 16, "JP US") },
+        { "MSX2", new MachineInfo("ASCII", "MSX2", 1985, 512, "JP") },
+        { "MSX2+", new MachineInfo("ASCII", "MSX2+", 1988, 19268, "JP") },
+        { "MSX V9990 VDP", new MachineInfo("Yamaha V9990", "GFX9000 for MSX", 1994, 32768, "JP") },
+        { "Oric", new MachineInfo("Tangerine", "Oric", 1983, 8, "GB") },
+        { "NEC PC-80", new MachineInfo("NEC", "PC-8001", 1979, 8, "JP") },
+        { "NEC PC-88", new MachineInfo("NEC", "PC-8801", 1981, 8, "JP") },
+        { "NEC PC-88 VA", new MachineInfo("NEC", "PC-88 VA", 1987, 65536, "JP") },
+        { "NEC PC-98", new MachineInfo("NEC", "PC-9801", 1982, 4096, "JP") },
+        { "PlayStation", new MachineInfo("Sony", "PlayStation", 1994, M16, "JP") },
+        { "Psion Series 3", new MachineInfo("Psion", "Series 3", 1991, 2, "GB") },
+        { "SAM Coupe", new MachineInfo("Miles Gordon Technology", "SAM Coupe", 1989, 128, "GB") },
+        { "Sharp X68000", new MachineInfo("Sharp", "X68000", 1987, 65536, "JP") },
+        { "Tandy 1000", new MachineInfo("Tandy", "Tandy 1000", 1984, 16, "US") },
+        { "TRS-80", new MachineInfo("Tandy", "TRS-80", 1977, 2, "US") },
+        { "TRS-80 Color Computer", new MachineInfo("Tandy", "TRS-80 Color Computer", 1980, 9, "US") },
+        { "Timex 2048", new MachineInfo("Timex", "TC 2048", 1984, 15, "PT GB") },
+        { "Vector-06C", new MachineInfo("Temirazov / Sokolov", "Vector-06C", 1987, 256, "SU") },
+        { "ZX81", new MachineInfo("Sinclair", "ZX81", 1981, 2, "GB") },
+        { "ZX Spectrum", new MachineInfo("Sinclair", "ZX Spectrum", 1982, 15, "GB") },
+        { "ZX Spectrum ULAplus", new MachineInfo("ULAplus", "ZX Spectrum with ULAplus", 2009, 256, "GB") },
+        { "ZX Spectrum Profi", new MachineInfo("Profi", "ZX Spectrum Profi", 1990, 256, "SU") },
+        { "ZX Spectrum Next", new MachineInfo("SpecNext", "ZX Spectrum Next", 2017, 512, "GB BR") },
+        { "ZX Evolution", new MachineInfo("NedoPC", "ZX Evolution", 2009, 32768, "RU") },
+        { "ZX-Uno", new MachineInfo("ZX-Uno team", "ZX-Uno", 2016, 256, "ES") },
+        { "eLeMeNt ZX", new MachineInfo("LMN128", "eLeMeNt ZX", 0, M16, "CZ") },
+    };
+
+    public static MachineInfo For(string platform)
+    {
+        MachineInfo m;
+        return platform != null && all.TryGetValue(platform, out m) ? m : null;
+    }
+
+    // "1982 \u00B7 15 colours", or whichever half is known
+    public string Facts
+    {
+        get
+        {
+            string c = null;
+            if (Colours >= 1000000) c = (Math.Floor(Colours / 100000.0) / 10).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + " million colours";
+            else if (Colours > 0) c = Colours.ToString("#,0", System.Globalization.CultureInfo.InvariantCulture) + " colours";
+            string y = Year > 0 ? Year.ToString() : null;
+            return y != null && c != null ? y + " \u00B7 " + c : y ?? c ?? "";
+        }
+    }
+
+    public string[] FlagList { get { return Flags.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries); } }
+
+    // a simplified flag, 3:2, drawn into r (antialiased by the caller)
+    public static void DrawFlag(Graphics g, RectangleF r, string code)
+    {
+        Color red = Color.FromArgb(206, 17, 38), white = Color.White, blue = Color.FromArgb(0, 40, 104);
+        GraphicsState st = g.Save();
+        g.SetClip(r);
+        float x = r.X, y = r.Y, w = r.Width, h = r.Height;
+        switch (code)
+        {
+            case "US":
+                for (int i = 0; i < 7; i++)
+                    using (var b = new SolidBrush(i % 2 == 0 ? red : white)) g.FillRectangle(b, x, y + h * i / 7f, w, h / 7f + 0.5f);
+                using (var b = new SolidBrush(Color.FromArgb(10, 49, 97))) g.FillRectangle(b, x, y, w * 0.42f, h * 4 / 7f);
+                break;
+            case "GB":
+            {
+                using (var b = new SolidBrush(Color.FromArgb(1, 33, 105))) g.FillRectangle(b, r);
+                float t = h / 5f;
+                using (var p = new Pen(white, t)) { g.DrawLine(p, x, y, x + w, y + h); g.DrawLine(p, x, y + h, x + w, y); }
+                using (var p = new Pen(red, t / 2.5f)) { g.DrawLine(p, x, y, x + w, y + h); g.DrawLine(p, x, y + h, x + w, y); }
+                using (var b = new SolidBrush(white)) { g.FillRectangle(b, x + w / 2 - t, y, 2 * t, h); g.FillRectangle(b, x, y + h / 2 - t, w, 2 * t); }
+                using (var b = new SolidBrush(red)) { g.FillRectangle(b, x + w / 2 - t * 0.6f, y, t * 1.2f, h); g.FillRectangle(b, x, y + h / 2 - t * 0.6f, w, t * 1.2f); }
+                break;
+            }
+            case "JP":
+            {
+                using (var b = new SolidBrush(white)) g.FillRectangle(b, r);
+                float d = h * 0.6f;
+                using (var b = new SolidBrush(Color.FromArgb(188, 0, 45))) g.FillEllipse(b, x + (w - d) / 2, y + (h - d) / 2, d, d);
+                break;
+            }
+            case "SU":
+            {
+                using (var b = new SolidBrush(Color.FromArgb(204, 0, 0))) g.FillRectangle(b, r);
+                float s = h * 0.17f, cx = x + w * 0.2f, cy = y + h * 0.24f;      // the small gold star at the hoist
+                var pts = new PointF[10];
+                for (int i = 0; i < 10; i++)
+                {
+                    double a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 == 0 ? s : s * 0.4;
+                    pts[i] = new PointF(cx + (float)(rr * Math.Cos(a)), cy + (float)(rr * Math.Sin(a)));
+                }
+                using (var b = new SolidBrush(Color.FromArgb(255, 216, 0))) g.FillPolygon(b, pts);
+                break;
+            }
+            case "RU":
+                Stripes(g, r, false, white, Color.FromArgb(0, 57, 166), Color.FromArgb(213, 43, 30));
+                break;
+            case "PL":
+                Stripes(g, r, false, white, Color.FromArgb(220, 20, 60));
+                break;
+            case "CZ":
+                Stripes(g, r, false, white, Color.FromArgb(215, 20, 26));
+                using (var b = new SolidBrush(Color.FromArgb(17, 69, 126)))
+                    g.FillPolygon(b, new[] { new PointF(x, y), new PointF(x + w / 2, y + h / 2), new PointF(x, y + h) });
+                break;
+            case "ES":
+                using (var b = new SolidBrush(Color.FromArgb(170, 21, 27))) g.FillRectangle(b, r);
+                using (var b = new SolidBrush(Color.FromArgb(241, 191, 0))) g.FillRectangle(b, x, y + h / 4, w, h / 2);
+                break;
+            case "PT":
+            {
+                using (var b = new SolidBrush(Color.FromArgb(255, 0, 0))) g.FillRectangle(b, r);
+                using (var b = new SolidBrush(Color.FromArgb(0, 102, 0))) g.FillRectangle(b, x, y, w * 0.4f, h);
+                float d = h * 0.45f;
+                using (var b = new SolidBrush(Color.FromArgb(255, 204, 0))) g.FillEllipse(b, x + w * 0.4f - d / 2, y + (h - d) / 2, d, d);
+                break;
+            }
+            case "BR":
+            {
+                using (var b = new SolidBrush(Color.FromArgb(0, 148, 64))) g.FillRectangle(b, r);
+                float mx = w * 0.1f, my = h * 0.12f;
+                using (var b = new SolidBrush(Color.FromArgb(254, 223, 0)))
+                    g.FillPolygon(b, new[] { new PointF(x + w / 2, y + my), new PointF(x + w - mx, y + h / 2), new PointF(x + w / 2, y + h - my), new PointF(x + mx, y + h / 2) });
+                float d = h * 0.46f;
+                using (var b = new SolidBrush(Color.FromArgb(0, 39, 118))) g.FillEllipse(b, x + (w - d) / 2, y + (h - d) / 2, d, d);
+                break;
+            }
+        }
+        g.Restore(st);
+        using (var p = new Pen(Color.FromArgb(120, 255, 255, 255), 1f)) g.DrawRectangle(p, r.X, r.Y, r.Width, r.Height);
+    }
+
+    static void Stripes(Graphics g, RectangleF r, bool vertical, params Color[] cols)
+    {
+        for (int i = 0; i < cols.Length; i++)
+            using (var b = new SolidBrush(cols[i]))
+                if (vertical) g.FillRectangle(b, r.X + r.Width * i / cols.Length, r.Y, r.Width / cols.Length + 0.5f, r.Height);
+                else g.FillRectangle(b, r.X, r.Y + r.Height * i / cols.Length, r.Width, r.Height / cols.Length + 0.5f);
+    }
+}
+
+// what the effect badges show (Canvas.PaintBadge)
+sealed class BadgeState
+{
+    public int Signal, Scan, Mask, Glow, Curve, PixMode;
+    public bool ScanDim, MaskDim, CurveDim, Tv, TvKnown, Auto;
+    public double Aspect = 1.0;
 }

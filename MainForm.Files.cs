@@ -1680,6 +1680,12 @@ partial class MainForm
             "  T                       True TV aspect: pixels shaped as on the original PAL / NTSC screen (retro)",
             "  K                       scanlines: off / light / medium / strong (retro, shown from about 300%)",
             "  C                       video signal: RGB / S-Video / composite (retro; composite blends dithering)",
+            "  Click the badges        above the info bar (retro pictures): cable, scanlines, phosphor mask, glow and",
+            "                          curvature; above them TV aspect, enlarged pixels and automatic effects (with",
+            "                          effects off: one badge to show them again); a click does what C, K, M, W, U,",
+            "                          T, N, A or O does. To their left, the computer badge (not clickable): the",
+            "                          maker, where it was designed (flags), the model, the year and the palette size",
+            "                          (the preview pane, Alt+P, shows the same badges for a retro picture, not clickable)",
             "  M                       phosphor mask: off / aperture grille / slot mask / dot mask (retro, from 200%)",
             "  W                       glow: off / soft / strong (bright areas light up their surroundings; retro)",
             "  U                       screen curvature: off / slight / strong, darker rounded corners (retro, below 800%)",
@@ -1980,7 +1986,7 @@ partial class MainForm
     ToolStripMenuItem MenuEntry(ToolStripMenuItem parent, string text, string keys, Action run, Func<bool> on, Func<bool> chk)
     {
         var m = new ToolStripMenuItem(text) { ForeColor = MenuText, ShortcutKeyDisplayString = keys };
-        m.Click += delegate { try { run(); } catch (Exception ex) { Warn(ex.Message); } };
+        m.Click += delegate { try { run(); UpdatePreview(); } catch (Exception ex) { Warn(ex.Message); } };   // the preview pane's badges follow
         parent.DropDownItems.Add(m);
         menuStates.Add(new MenuState { Item = m, On = on, Checked = chk });
         return m;
@@ -2403,7 +2409,7 @@ partial class MainForm
         if (k == Keys.F11) { ToggleFull(); return true; }
         if (k == Keys.F1) { ShowHelp(); return true; }
         int preset = PresetKey(keyData);
-        if (preset > 0) { ApplyPreset(preset - 1); return true; }
+        if (preset > 0) { ApplyPreset(preset - 1); UpdatePreview(); return true; }
         int markKind, markValue = MarkKey(keyData, out markKind);
         if (k == Keys.O && shift && !ctrl && !alt && !typing && !comparing && (!viewing || CanBeforeAfter() || CanRetroPreview())) { StartBeforeAfter(); return true; }   // before / after, or the retro preview
         if (comparing) return markKind != 0 || CompareKey(keyData);       // marks are given in the browser or the viewer

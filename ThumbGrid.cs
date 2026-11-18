@@ -568,7 +568,7 @@ sealed class ThumbGrid : Control
     public static readonly string[] ShowNames =
     {
         "All", "Tagged", "Not tagged",
-        "\u2605 or more", "\u2605\u2605 or more", "\u2605\u2605\u2605 or more", "\u2605\u2605\u2605\u2605 or more", "\u2605\u2605\u2605\u2605\u2605",
+        "★ or more", "★★ or more", "★★★ or more", "★★★★ or more", "★★★★★",
         "No rating", "Red", "Yellow", "Green", "Blue", "Purple", "No label"
     };
     int showMode;
@@ -1297,7 +1297,7 @@ sealed class ThumbGrid : Control
         Mark mk = MarkOf(it);
         string[] text =
         {
-            it.Name + (mk != null && mk.Tag ? "  \u2714" : ""),
+            it.Name + (mk != null && mk.Tag ? "  ✔" : ""),
             Marks.StarText(StarsOf(it)),
             mk != null && mk.Label > 0 ? Marks.LabelNames[mk.Label] : "",
             (it.Ext ?? "").TrimStart('.').ToUpperInvariant(),
@@ -1607,6 +1607,24 @@ sealed class PreviewPane : Control
     int bmpW, bmpH, reqSize;
     string note, error;
     int gen, fileStars;
+    int origW, origH;                      // retro pictures: original resolution and the TV's pixel shape (0 = not known)
+    double aspect;
+    List<string> exif;                     // photos: camera details ("Camera:  ..." lines, as the viewer's E panel)
+    int colours;                           // retro pictures: colours used (0 = not counted)
+    int[] palette;                         // and those colours, most used first (null when there are too many to show)
+
+    // Retro pictures also get the viewer's badges, not clickable: the computer, and the main screen effects the viewer
+    // would show this picture with (your own, or the automatic choice for its computer). SetEffects: the viewer's settings.
+    readonly Font tiny = new Font("Segoe UI", 7.5f), tinyBold = new Font("Segoe UI", 7.5f, FontStyle.Bold);
+    EffectSet ownFx = new EffectSet();
+    bool autoFx, fxOff;
+    int pixMode;
+
+    public void SetEffects(EffectSet own, bool auto, bool off, int pix)
+    {
+        ownFx = own ?? new EffectSet(); autoFx = auto; fxOff = off; pixMode = pix;
+        Invalidate();
+    }
 
     public PreviewPane()
     {
@@ -1625,7 +1643,7 @@ sealed class PreviewPane : Control
         {
             item = it;
             if (bmp != null) { bmp.Dispose(); bmp = null; }
-            note = error = null; bmpW = bmpH = 0; reqSize = 0; fileStars = 0;
+            note = error = null; bmpW = bmpH = 0; reqSize = 0; fileStars = 0; origW = origH = 0; aspect = 0; exif = null; colours = 0; palette = null;
             gen++;
             Request();
         }
@@ -1642,7 +1660,7 @@ sealed class PreviewPane : Control
         if (svc == null) svc = new ThumbService(1, Done);
         host = FindForm();
         int g = gen;
-        svc.Replace(new List<ThumbJob> { new ThumbJob { Path = item.Path, Size = size, Stamp = g } });   // Stamp carries the request number
+        svc.Replace(new List<ThumbJob> { new ThumbJob { Path = item.Path, Size = size, Stamp = g, Details = true } });   // Stamp carries the request number
     }
 
     void Done(ThumbJob j, ThumbResult r)               // worker thread
@@ -1652,7 +1670,7 @@ sealed class PreviewPane : Control
         {
             if (j.Stamp != gen || item == null || !string.Equals(j.Path, item.Path, StringComparison.OrdinalIgnoreCase)) { if (r.Bmp != null) r.Bmp.Dispose(); return; }
             if (bmp != null) bmp.Dispose();
-            bmp = r.Bmp; bmpW = r.W; bmpH = r.H; note = r.Note; fileStars = r.FileStars; error = r.Bmp == null ? (r.Error ?? "Could not be opened.") : null;
+            bmp = r.Bmp; bmpW = r.W; bmpH = r.H; note = r.Note; fileStars = r.FileStars; origW = r.OrigW; origH = r.OrigH; aspect = r.Aspect; exif = r.Exif; colours = r.Colours; palette = r.Palette; error = r.Bmp == null ? (r.Error ?? "Could not be opened.") : null;
             Invalidate();
         }) && r.Bmp != null) r.Bmp.Dispose();
     }
@@ -1674,13 +1692,25 @@ sealed class PreviewPane : Control
         // the facts first, so the picture gets whatever height is left
         var lines = new List<string>();
         if (bmpW > 0) lines.Add(bmpW + " x " + bmpH + "    " + (note ?? "PC (standard image)"));
+        if (note != null && origW > 0 && origH > 0 && (origW != bmpW || origH != bmpH))
+            lines.Add("Original " + origW + " x " + origH + " on the computer's screen");
+        if (note == null) lines.AddRange(PhotoLines());
         lines.Add(Util.FmtSize(item.Size) + "    " + new DateTime(item.Modified, DateTimeKind.Utc).ToLocalTime().ToString("yyyy-MM-dd HH:mm"));
         if (mark != null && !mark.Empty) lines.Add(Marks.Describe(mark));
         if ((mark == null || mark.Stars == 0) && fileStars > 0) lines.Add(Marks.StarText(fileStars) + "  rating stored in the file");
         if (where != null) lines.Add("In: " + where);
         if (selNote != null) lines.Add(selNote);
         int lh = font.Height + Util.S(2);
-        int infoH = bold.Height + Util.S(6) + lines.Count * lh + (error != null ? lh * 2 : 0) + pad;
+        // retro pictures: the computer badge, then the screen effects badges, wrapped to the pane's width
+        MachineInfo mi = note != null && bmp != null ? MachineInfo.For(note) : null;
+        int avail = Math.Max(1, ClientSize.Width - 2 * pad);
+        int nFx = note == null || bmp == null ? 0 : fxOff ? 1 : PaneBadges.Length;
+        int badgesH;
+        List<Rectangle> spots = LayoutBadges(g, mi, nFx, avail, lh, out badgesH);
+        int sw = Util.S(12), sgap = Util.S(2), perRow = Math.Max(1, (avail + sgap) / (sw + sgap));
+        int swRows = palette != null ? (palette.Length + perRow - 1) / perRow : 0;
+        int paletteH = note != null && colours > 0 ? lh + swRows * (sw + sgap) + Util.S(4) : 0;
+        int infoH = bold.Height + Util.S(6) + lines.Count * lh + (error != null ? lh * 2 : 0) + pad + paletteH + (badgesH > 0 ? badgesH + Util.S(4) : 0);
         var pic = new Rectangle(pad, pad, Math.Max(1, ClientSize.Width - 2 * pad), Math.Max(1, ClientSize.Height - infoH - 2 * pad));
         if (bmp != null)
         {
@@ -1711,5 +1741,111 @@ sealed class PreviewPane : Control
             TextRenderer.DrawText(g, l, font, new Rectangle(pad, y, ClientSize.Width - 2 * pad, lh), c, fl);
             y += lh;
         }
+        if (paletteH > 0)                                  // the colours the picture uses, most used first
+        {
+            string count = colours >= ThumbService.MaxCount ? colours.ToString("#,0") + " or more colours used"
+                         : colours + (mi != null && mi.Colours > 0 && mi.Colours < 1000000 && colours <= mi.Colours ? " of " + mi.Colours.ToString("#,0") : "")
+                           + (colours == 1 ? " colour used" : " colours used");
+            TextRenderer.DrawText(g, count, font, new Rectangle(pad, y, ClientSize.Width - 2 * pad, lh), Color.Silver, fl);
+            y += lh;
+            if (palette != null)
+            {
+                for (int i = 0; i < palette.Length; i++)
+                {
+                    var sr = new Rectangle(pad + (i % perRow) * (sw + sgap), y + (i / perRow) * (sw + sgap), sw, sw);
+                    using (var b = new SolidBrush(Color.FromArgb(palette[i]))) g.FillRectangle(b, sr);
+                    using (var pen = new Pen(Color.FromArgb(70, 70, 70))) g.DrawRectangle(pen, sr.X, sr.Y, sr.Width - 1, sr.Height - 1);
+                }
+                y += swRows * (sw + sgap);
+            }
+            y += Util.S(4);
+        }
+        if (badgesH > 0) DrawBadges(g, pad, y + Util.S(4), avail, lh, spots, mi, nFx);
+    }
+
+    // photos: the camera, the exposure in one line, and when it was taken (from the EXIF lines; no GPS)
+    List<string> PhotoLines()
+    {
+        var r = new List<string>();
+        if (exif == null) return r;
+        var v = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (string l in exif)
+        {
+            int at = l.IndexOf(":  ", StringComparison.Ordinal);
+            if (at > 0 && !v.ContainsKey(l.Substring(0, at))) v.Add(l.Substring(0, at), l.Substring(at + 3));
+        }
+        string x;
+        if (v.TryGetValue("Camera", out x)) r.Add(x);
+        if (v.TryGetValue("Lens", out x)) r.Add(x);
+        var shot = new List<string>();
+        if (v.TryGetValue("Exposure", out x)) shot.Add(x);
+        if (v.TryGetValue("Aperture", out x)) shot.Add(x);
+        if (v.TryGetValue("ISO", out x)) shot.Add("ISO " + x);
+        if (v.TryGetValue("Focal length", out x)) { int p = x.IndexOf("  (", StringComparison.Ordinal); shot.Add(p > 0 ? x.Substring(0, p) : x); }
+        if (shot.Count > 0) r.Add(string.Join(" \u00B7 ", shot.ToArray()));
+        if (v.TryGetValue("Taken", out x)) r.Add("Taken " + x);
+        return r;
+    }
+
+    // the effect badges shown here: signal, scanlines, mask, glow and TV aspect (curvature, pixels and automatic / own
+    // say little here: the label above says when the effects are the automatic ones)
+    static readonly int[] PaneBadges = { Canvas.BadgeSignal, Canvas.BadgeScan, Canvas.BadgeMask, Canvas.BadgeGlow, Canvas.BadgeTv };
+
+    // where the badges go, below a one-line label: the computer badge first, then the effect badges, side by side and
+    // wrapped to the pane's width (positions from the top left of the badge area; height = all of it)
+    List<Rectangle> LayoutBadges(Graphics g, MachineInfo mi, int nFx, int avail, int lh, out int height)
+    {
+        var spots = new List<Rectangle>();
+        height = 0;
+        if (mi == null && nFx == 0) return spots;
+        int bw = Util.S(60), bh = Util.S(50), gap = Util.S(5), x = 0, y = lh;
+        var widths = new List<int>();
+        if (mi != null) widths.Add(Math.Min(avail, Math.Max(2 * bw + gap, Canvas.MachineBadgeWidth(g, mi, tiny, tinyBold))));
+        for (int i = 0; i < nFx; i++) widths.Add(bw);
+        foreach (int w in widths)
+        {
+            if (x > 0 && x + w > avail) { x = 0; y += bh + gap; }
+            spots.Add(new Rectangle(x, y, w, bh));
+            x += w + gap;
+        }
+        height = y + bh;
+        return spots;
+    }
+
+    void DrawBadges(Graphics g, int x0, int y0, int avail, int lh, List<Rectangle> spots, MachineInfo mi, int nFx)
+    {
+        SmoothingMode oldS = g.SmoothingMode;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+        TextRenderer.DrawText(g, "In the viewer" + (nFx > 0 && autoFx && !fxOff ? " (automatic effects)" : ""), font, new Rectangle(x0, y0, avail, lh), Color.Gray,
+            TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
+        int k = 0;
+        if (mi != null)
+        {
+            Rectangle r = spots[k++];
+            r.Offset(x0, y0);
+            Canvas.PaintMachine(g, r, mi, tiny, tinyBold);
+        }
+        if (nFx > 0)
+        {
+            EffectSet e = ownFx;
+            if (autoFx)
+            {
+                EffectSet a = EffectSet.ForPlatform(note, origW, origH);     // as the viewer chooses it
+                if (a != null) { a.Curve = ownFx.Curve; e = a; }
+            }
+            var st = new BadgeState
+            {
+                Signal = e.Signal, Scan = e.Scan, Mask = e.Mask, Glow = e.Glow, Curve = e.Curve, Tv = e.Tv,
+                TvKnown = aspect > 0, Aspect = aspect > 0 ? aspect : 1.0, PixMode = pixMode, Auto = autoFx
+            };
+            for (int i = 0; i < nFx; i++)
+            {
+                Rectangle r = spots[k++];
+                r.Offset(x0, y0);
+                Canvas.PaintBadge(g, r, fxOff ? Canvas.BadgeOff : PaneBadges[i], false, tiny, st);
+            }
+        }
+        g.SmoothingMode = oldS;
     }
 }

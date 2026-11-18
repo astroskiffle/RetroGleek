@@ -28,7 +28,7 @@ sealed class Item
     public bool Offline, Sel;
 }
 
-sealed class ThumbJob { public string Path; public int Size; public long Stamp; }
+sealed class ThumbJob { public string Path; public int Size; public long Stamp; public bool Details; }   // Details: the preview pane's extra facts
 
 // What a thumbnail worker hands back: the thumbnail plus facts learned while decoding (or why it failed).
 sealed class ThumbResult
@@ -38,6 +38,12 @@ sealed class ThumbResult
     public string Note;          // retro platform name, if any
     public string Error;         // set when Bmp == null
     public int FileStars;        // star rating stored in the file by Windows / Lightroom ... (0 = none)
+    public int OrigW, OrigH;     // retro pictures: the original resolution (0 = not known)
+    public double Aspect;        // retro pictures: the TV's pixel shape, width : height (0 = not known)
+    // asked for with Details only (the preview pane):
+    public List<string> Exif;    // photos: readable camera details, as the viewer's E panel shows them (or null)
+    public int Colours;          // retro pictures: how many colours the picture uses (0 = not counted; MaxCount = that many or more)
+    public int[] Palette;        // retro pictures: those colours, most used first, when there are at most MaxSwatches (else null)
 }
 
 // LRU cache of thumbnails, bounded by memory. UI thread only.
@@ -143,32 +149,74 @@ sealed class ThumbService
                 running.Add(j.Path);
             }
             ThumbResult r;
-            try { r = Make(j.Path, j.Size); }
+            try { r = Make(j.Path, j.Size, j.Details); }
             catch (Exception ex) { r = new ThumbResult { Error = Util.Why(ex) }; }
             lock (sync) running.Remove(j.Path);
             try { done(j, r); } catch (Exception) { if (r.Bmp != null) r.Bmp.Dispose(); }
         }
     }
 
-    internal static ThumbResult Make(string path, int size)
+    internal static ThumbResult Make(string path, int size) { return Make(path, size, false); }
+
+    internal const int MaxCount = 65536, MaxSwatches = 64;
+
+    // the colours a picture uses, most used first (Colours / Palette of ThumbResult)
+    static void CountColours(Bitmap src, ThumbResult r)
+    {
+        int w = src.Width, h = src.Height;
+        var counts = new Dictionary<int, int>();
+        var row = new int[w];
+        BitmapData d = src.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        try
+        {
+            for (int y = 0; y < h && counts.Count < MaxCount; y++)
+            {
+                Marshal.Copy(d.Scan0 + y * d.Stride, row, 0, w);
+                for (int x = 0; x < w; x++)
+                {
+                    int c = row[x] | unchecked((int)0xFF000000), n;
+                    counts.TryGetValue(c, out n);
+                    counts[c] = n + 1;
+                }
+            }
+        }
+        finally { src.UnlockBits(d); }
+        r.Colours = Math.Min(MaxCount, counts.Count);
+        if (counts.Count > MaxSwatches) return;
+        var list = new List<KeyValuePair<int, int>>(counts);
+        list.Sort(delegate (KeyValuePair<int, int> a, KeyValuePair<int, int> b) { return b.Value.CompareTo(a.Value); });
+        r.Palette = new int[list.Count];
+        for (int i = 0; i < list.Count; i++) r.Palette[i] = list[i].Key;
+    }
+
+    internal static ThumbResult Make(string path, int size, bool details)
     {
         if ((File.GetAttributes(path) & Util.CloudMask) != 0)
             return new ThumbResult { Error = "Cloud placeholder: the file is not stored on this PC." };
         if (!Util.IsNative(path) && Retro.Claims(path))
         {
-            long bytes; string platform;
-            using (Bitmap src = Retro.Load(path, out bytes, out platform))
-                return new ThumbResult { Bmp = Scale(src, 0, size), W = src.Width, H = src.Height, Note = platform };
+            long bytes; string platform; int frames; RetroGeom geom;
+            using (Bitmap src = Retro.Load(path, out bytes, out platform, out frames, out geom))
+            {
+                var rr = new ThumbResult
+                {
+                    Bmp = Scale(src, 0, size), W = src.Width, H = src.Height, Note = platform,
+                    OrigW = geom != null ? geom.OrigW : 0, OrigH = geom != null ? geom.OrigH : 0,
+                    Aspect = geom != null && geom.XPpm > 0 && geom.YPpm > 0 ? geom.PixelAspect : 0
+                };
+                if (details) { try { CountColours(src, rr); } catch (Exception) { rr.Colours = 0; rr.Palette = null; } }
+                return rr;
+            }
         }
         if (WinCodec.Claims(path))                             // decoded straight to thumbnail size by Windows' codec
         {
             CodecPic c;
-            try { c = WinCodec.Load(path, size, true); }
+            try { c = WinCodec.Load(path, size, true, details); }
             catch (Exception ex) { return new ThumbResult { Error = WinCodec.Why(path, ex) }; }
             using (c.Bmp)
             {
                 bool sw = (c.Rot & 1) == 1;
-                return new ThumbResult { Bmp = Scale(c.Bmp, c.Rot, size), W = sw ? c.H : c.W, H = sw ? c.W : c.H, FileStars = c.Stars };
+                return new ThumbResult { Bmp = Scale(c.Bmp, c.Rot, size), W = sw ? c.H : c.W, H = sw ? c.W : c.H, FileStars = c.Stars, Exif = details ? c.Exif : null };
             }
         }
         using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1 << 16))
@@ -177,16 +225,17 @@ sealed class ThumbService
             int rot = Util.ReadRotation(img);
             bool swap = (rot & 1) == 1;
             int stars = FileRating.MayHold(path) ? FileRating.Read(path, img) : 0;
+            List<string> exif = details ? ExifInfo.Read(img) : null;          // from the header: nothing more is decoded
             Bitmap thumb = null;
             if (JpegRotate.IsJpeg(path) && WinCodec.WorthScaling(img.Width, img.Height, size))
                 thumb = WinCodec.ScaledJpeg(path, img.Width, img.Height, size);     // big photo: decode at 1/2, 1/4 or 1/8 size
             if (thumb != null)
             {
                 using (thumb)
-                    return new ThumbResult { Bmp = Scale(thumb, rot, size), W = swap ? img.Height : img.Width, H = swap ? img.Width : img.Height, FileStars = stars };
+                    return new ThumbResult { Bmp = Scale(thumb, rot, size), W = swap ? img.Height : img.Width, H = swap ? img.Width : img.Height, FileStars = stars, Exif = exif };
             }
             return new ThumbResult { Bmp = Scale(img, rot, size), W = swap ? img.Height : img.Width, H = swap ? img.Width : img.Height,
-                                     FileStars = stars };
+                                     FileStars = stars, Exif = exif };
         }
     }
 
