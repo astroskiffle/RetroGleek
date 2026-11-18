@@ -1,7 +1,7 @@
 # RetroGleek
 
 ![The details list with platform, dimensions, colours, ratings and labels](images/DualMode.jpg)
-*Browse folders of modern and retro pictures* | *Sort, rate, tag and audit a collection*
+*Browse folders of modern and retro pictures* | *Sort, rate, tag and audit a collection with Single/Duel folder modes*
 
 ### 📺 See your retro pictures the way they were meant to be seen
 
