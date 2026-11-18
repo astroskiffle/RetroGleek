@@ -161,7 +161,7 @@ sealed class ThumbService
     internal const int MaxCount = 65536, MaxSwatches = 64;
 
     // the colours a picture uses, most used first (Colours / Palette of ThumbResult)
-    static void CountColours(Bitmap src, ThumbResult r)
+    internal static void CountColours(Bitmap src, ThumbResult r)
     {
         int w = src.Width, h = src.Height;
         var counts = new Dictionary<int, int>();

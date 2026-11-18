@@ -1743,9 +1743,7 @@ sealed class PreviewPane : Control
         }
         if (paletteH > 0)                                  // the colours the picture uses, most used first
         {
-            string count = colours >= ThumbService.MaxCount ? colours.ToString("#,0") + " or more colours used"
-                         : colours + (mi != null && mi.Colours > 0 && mi.Colours < 1000000 && colours <= mi.Colours ? " of " + mi.Colours.ToString("#,0") : "")
-                           + (colours == 1 ? " colour used" : " colours used");
+            string count = MachineInfo.UsedText(colours, mi);
             TextRenderer.DrawText(g, count, font, new Rectangle(pad, y, ClientSize.Width - 2 * pad, lh), Color.Silver, fl);
             y += lh;
             if (palette != null)

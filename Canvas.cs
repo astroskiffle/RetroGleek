@@ -578,6 +578,7 @@ sealed class Canvas : Control
         int top = yLow;
         for (int i = 0; i < BadgeCount; i++)
             if (!badges[i].IsEmpty) { DrawBadge(g, badges[i], i); top = Math.Min(top, badges[i].Y); }
+        top = DrawColoursUsed(g, right, top - gap, Math.Min(5 * w + 4 * gap, right - m), m, mi);   // above the badges
         if (badgeHot >= 0 && badgeHot < BadgeCount && !badges[badgeHot].IsEmpty)   // what a click does
         {
             string tip = BadgeTips[badgeHot];
@@ -667,6 +668,58 @@ sealed class Canvas : Control
         }
         using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
             g.DrawString(label, tiny, Brushes.Gainsboro, new RectangleF(r.X, r.Bottom - labelH - Util.S(2), r.Width, labelH), sf);
+    }
+
+    // ---- colours used (above the badges, not clickable): how many colours the picture shown uses, against its
+    // computer's palette ("11 of 16 colours used"), with a strip of swatches, most used first, when there are at most
+    // 64. Counted once per picture (and frame of an animation), from the picture as decoded.
+    Image coloursOf;
+    int coloursFrame = -1, coloursCount;
+    int[] coloursPal;
+
+    // draws the panel with its bottom at bottom, right-aligned at right, at most maxW wide; returns its top (or bottom
+    // if it isn't shown: no room, too many pixels, or the picture can't be read)
+    int DrawColoursUsed(Graphics g, int right, int bottom, int maxW, int m, MachineInfo mi)
+    {
+        int f = AnimActive ? frame : 0;
+        if (coloursOf != cur.Img || coloursFrame != f)
+        {
+            coloursOf = cur.Img; coloursFrame = f; coloursCount = 0; coloursPal = null;
+            var bm = cur.Img as Bitmap;
+            if (bm != null && (long)bm.Width * bm.Height <= 16000000L)
+            {
+                var r = new ThumbResult();
+                try { ThumbService.CountColours(bm, r); coloursCount = r.Colours; coloursPal = r.Palette; }
+                catch (Exception) { coloursCount = 0; coloursPal = null; }
+            }
+        }
+        if (coloursCount <= 0 || maxW < Util.S(120)) return bottom + Util.S(6);
+        int pad = Util.S(7), sw = Util.S(12), sg = Util.S(2), lh = tiny.Height + Util.S(2);
+        int inner = maxW - 2 * pad, perRow = Math.Max(1, (inner + sg) / (sw + sg));
+        int n = coloursPal != null ? coloursPal.Length : 0, rows = (n + perRow - 1) / perRow;
+        string text = MachineInfo.UsedText(coloursCount, mi);
+        int textW = (int)Math.Ceiling(g.MeasureString(text, tiny).Width);
+        int pw = Math.Min(maxW, Math.Max(textW, Math.Min(n, perRow) * (sw + sg) - sg) + 2 * pad);
+        int ph = pad + lh + (rows > 0 ? Util.S(3) + rows * (sw + sg) - sg : 0) + pad;
+        var pr = new Rectangle(right - pw, bottom - ph, pw, ph);
+        if (pr.Y < m) return bottom + Util.S(6);
+        using (GraphicsPath bg = Rounded(pr, Util.S(6)))
+        {
+            using (var b = new SolidBrush(Color.FromArgb(165, 0, 0, 0))) g.FillPath(b, bg);
+            using (var pen = new Pen(Color.FromArgb(90, 255, 255, 255), Math.Max(1f, Util.K))) g.DrawPath(pen, bg);
+        }
+        g.DrawString(text, tiny, Brushes.Gainsboro, pr.X + pad, pr.Y + pad);
+        SmoothingMode oldS = g.SmoothingMode;
+        g.SmoothingMode = SmoothingMode.None;
+        int y0 = pr.Y + pad + lh + Util.S(3);
+        for (int i = 0; i < n; i++)
+        {
+            var sr = new Rectangle(pr.X + pad + (i % perRow) * (sw + sg), y0 + (i / perRow) * (sw + sg), sw, sw);
+            using (var b = new SolidBrush(Color.FromArgb(coloursPal[i]))) g.FillRectangle(b, sr);
+            using (var pen = new Pen(Color.FromArgb(90, 90, 90))) g.DrawRectangle(pen, sr.X, sr.Y, sr.Width - 1, sr.Height - 1);
+        }
+        g.SmoothingMode = oldS;
+        return pr.Y;
     }
 
     // The computer badge (not clickable): maker and flags, then the model, then year and palette size
@@ -2801,6 +2854,14 @@ sealed class MachineInfo
             string y = Year > 0 ? Year.ToString() : null;
             return y != null && c != null ? y + " \u00B7 " + c : y ?? c ?? "";
         }
+    }
+
+    // "11 of 16 colours used" (the computer's palette only when the picture stays within it)
+    public static string UsedText(int colours, MachineInfo mi)
+    {
+        if (colours >= ThumbService.MaxCount) return colours.ToString("#,0") + " or more colours used";
+        return colours.ToString("#,0") + (mi != null && mi.Colours > 0 && mi.Colours < 1000000 && colours <= mi.Colours ? " of " + mi.Colours.ToString("#,0") : "")
+               + (colours == 1 ? " colour used" : " colours used");
     }
 
     public string[] FlagList { get { return Flags.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries); } }

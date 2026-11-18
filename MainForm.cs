@@ -415,7 +415,7 @@ sealed partial class MainForm : Form
         StorePresets();
         StoreRecentDest();
         StoreFavourites();
-        Prefs.Set("lastFolder", grid.Dir);
+        Prefs.Set("lastFolder", historyClearedAt != null ? null : grid.Dir);   // after Clear history: not remembered
         Prefs.Save();
     }
 
@@ -972,7 +972,8 @@ sealed partial class MainForm : Form
         UpdateStatus();
         if (!viewing) Text = dir + " - RetroGleek";
         RecordHistory(dir);
-        if (err == null) RememberRecentFolder(dir);
+        if (historyClearedAt != null && !Util.SameDir(dir, historyClearedAt)) historyClearedAt = null;   // a new folder: history starts again
+        if (err == null && historyClearedAt == null) RememberRecentFolder(dir);
         if (!addrBox.Focused) addrBox.Text = dir;
         UpdateNavButtons();
         SyncCanvas();

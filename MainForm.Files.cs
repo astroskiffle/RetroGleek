@@ -48,6 +48,16 @@ partial class MainForm
         gCopy = AddEntry(gridMenu, "Copy", "Ctrl+C", delegate { DoCopy(false); });
         gPaste = AddEntry(gridMenu, "Paste", "Ctrl+V", delegate { DoPaste(false); });
         gridMenu.Items.Add(new ToolStripSeparator());
+        gRate = new ToolStripMenuItem("Rating");               // the selected pictures (or the focused one), as Alt+0..5
+        for (int ri = 0; ri <= 5; ri++)
+        {
+            int stars = ri;
+            var it = new ToolStripMenuItem(ri == 0 ? "No rating" : Marks.StarText(ri)) { ShortcutKeyDisplayString = "Alt+" + ri, Tag = ri };
+            it.Click += delegate { DoMark(stars, -1, false); };
+            gRate.DropDownItems.Add(it);
+        }
+        gridMenu.Items.Add(gRate);
+        gridMenu.Items.Add(new ToolStripSeparator());
         gSave = AddEntry(gridMenu, "Save as PNG (lossless)...", "Ctrl+S", delegate { DoSavePng(); });
         gFrames = AddEntry(gridMenu, "Export all frames as PNG...", "Ctrl+Shift+S", delegate { DoExportFrames(); });
         gridMenu.Items.Add(new ToolStripSeparator());
@@ -98,7 +108,7 @@ partial class MainForm
     const int MaxFavourites = 20, MaxRecentFolders = 10;
     readonly List<string> favourites = new List<string>();
     readonly List<string> recentFolders = new List<string>();
-    ToolStripMenuItem tFav;
+    ToolStripMenuItem tFav, gRate;
 
     void LoadFavourites()
     {
@@ -208,6 +218,20 @@ partial class MainForm
         gPaste.Enabled = grid.Dir != null && ClipHasFiles();
         gSave.Enabled = on;
         gFrames.Enabled = on;
+        List<string> targets = MarkTargets();                  // tick the rating they all share (none if they differ)
+        int shared = -1;
+        foreach (string tp in targets)
+        {
+            Mark tm = Marks.ForFile(tp);
+            int st = tm == null ? 0 : tm.Stars;
+            if (shared < 0) shared = st; else if (shared != st) { shared = -2; break; }
+        }
+        gRate.Enabled = on && targets.Count > 0;
+        foreach (ToolStripItem ti in gRate.DropDownItems)
+        {
+            var tmi = ti as ToolStripMenuItem;
+            if (tmi != null) tmi.Checked = shared >= 0 && (int)tmi.Tag == shared;
+        }
         gInvert.Enabled = grid.Items.Count > 0;
         for (int i = 0; i < gSort.Length; i++) gSort[i].Checked = grid.SortKey == i;
         gSortDesc.Checked = grid.SortDesc;
@@ -333,6 +357,34 @@ partial class MainForm
             if (MoveItems(srcs, dest)) { try { Clipboard.Clear(); } catch (Exception) { } SetCut(null); }   // cut files are pasted once, as in Explorer
         }
         else CopyItems(srcs, dest);
+    }
+
+    // ---------------------------------------------------------------- Settings > Clear history
+
+    // Clear history wipes the traces of where you have been: the recent folders, the folder RetroGleek opens at, the
+    // recent Copy to / Move to folders and the back / forward list. The folder open now is not remembered either,
+    // until you open another one (historyClearedAt). Favourites, marks, presets and other settings stay.
+    string historyClearedAt;
+
+    void ClearHistory()
+    {
+        if (MessageBox.Show(this,
+                "Clear the history?\n\n" +
+                "This forgets the recent folders, the folder RetroGleek opens at next time, the recent Copy to / Move to folders " +
+                "and the back / forward list, and saves that straight away.\n\n" +
+                "Your favourite folders, ratings, colour labels and tags, presets and other settings stay. No pictures or folders are touched.",
+                "Clear history", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+        recentFolders.Clear();
+        recentDest.Clear();
+        hist.Clear(); hpos = -1;
+        if (grid.Dir != null) { hist.Add(grid.Dir); hpos = 0; }
+        historyClearedAt = grid.Dir ?? "";
+        UpdateNavButtons();
+        StoreFavourites();                                 // writes the (now empty) recent folders too
+        StoreRecentDest();
+        Prefs.Set("lastFolder", (string)null);
+        Prefs.Save();
+        status.Text = "  History cleared (recent folders, last folder, recent Copy to / Move to folders, back / forward)";
     }
 
     // ---------------------------------------------------------------- faded "cut" items
@@ -1647,7 +1699,7 @@ partial class MainForm
             "  Ctrl+Shift+S            save every frame of animated GIFs and WebPs / pages of TIFFs as separate PNGs",
             "  Ctrl+Shift+R / L        turn the selected JPEG photos on disk, without loss (asks first; also in the viewer)",
             "  F8                      show / hide retro-computer formats",
-            "  Right-click             menu: sort, details on tiles, invert selection ...",
+            "  Right-click             menu: rating, sort, details on tiles, invert selection ...",
             "",
             "VIEWER",
             "  Left / Right, PgUp / PgDn, Space / Backspace, wheel   previous / next picture",
@@ -1685,7 +1737,8 @@ partial class MainForm
             "                          effects off: one badge to show them again); a click does what C, K, M, W, U,",
             "                          T, N, A or O does. To their left, the computer badge (not clickable): the",
             "                          maker, where it was designed (flags), the model, the year and the palette size",
-            "                          (the preview pane, Alt+P, shows the same badges for a retro picture, not clickable)",
+            "                          (the preview pane, Alt+P, shows the same badges for a retro picture, not clickable).",
+            "                          Above them: the colours the picture uses (\"11 of 16 colours used\"), with swatches",
             "  M                       phosphor mask: off / aperture grille / slot mask / dot mask (retro, from 200%)",
             "  W                       glow: off / soft / strong (bright areas light up their surroundings; retro)",
             "  U                       screen curvature: off / slight / strong, darker rounded corners (retro, below 800%)",
@@ -2330,6 +2383,7 @@ partial class MainForm
         MenuEntry(pix, "S&harp (even pixels at any size)", "", delegate { canvas.PixMode = 3; }, null, delegate { return canvas.PixMode == 3; });
         MenuEntry(pix, "&Smooth", "", delegate { canvas.PixMode = 2; }, null, delegate { return canvas.PixMode == 2; });
         MenuSep(settings);
+        MenuEntry(settings, "Clear &history...", "", delegate { ClearHistory(); }, null, null);
         MenuEntry(settings, "&Reset to default settings...", "", delegate { ResetPrefs(); }, null, null);
         MenuEntry(settings, "Settings are remembered in settings.ini next to RetroGleek.exe", "", delegate { }, delegate { return false; }, null);
 
