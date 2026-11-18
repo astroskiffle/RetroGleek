@@ -20,7 +20,7 @@ the smart shaders and every picture gets the screen of its own computer:
 It opens hundreds of retro formats out of the box (Amiga, Atari, Commodore 64, ZX Spectrum, MSX, Amstrad CPC
 and many more, 567 file extensions in all) thanks to [RECOIL](https://github.com/pfusik/recoil).
 
-![The details list with platform, dimensions, colours, ratings and labels](bugs_daffy.png)
+![The details list with platform, dimensions, colours, ratings and labels](images/bugs_daffy.png)
 **LEFT:**  How a modern PC renders the image  |  **RIGHT:** The same image rendered through smart shaders on RetroGleek 
 
 ### 🕹️ Your photos on an 8-bit computer
