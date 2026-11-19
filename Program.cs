@@ -124,6 +124,8 @@
 //   RetroConvert.cs    converting pictures into retro formats (Spectrum .scr, C64 Koala .koa and Doodle .dd,
 //                      Amstrad CPC .scr mode 0 and 1, Atari ST Degas .pi1, Amiga IFF .iff, MSX Screen 2 .sc2 and
 //                      Screen 8 .sc8), every file checked by RECOIL
+//   PictureAdjust.cs   brightness, contrast, saturation and hue of the picture before a retro conversion, and the
+//                      sliders that set them (Convert dialog, the retro preview's Adjust window)
 //   Duplicates.cs      finding identical, same and similar pictures across folders (Tools > Find duplicates):
 //                      file hashes, pixel hashes (retro screenshots trimmed and reduced), dHash / pHash fingerprints
 //   Metadata.cs        File > Properties: every EXIF, GPS, IPTC, XMP and PNG text detail a picture holds, and writing

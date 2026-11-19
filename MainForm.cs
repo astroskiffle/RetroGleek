@@ -349,8 +349,12 @@ sealed partial class MainForm : Form
             canvas.CurveMode = Prefs.Int("curvature", 0, 0, 2);
             canvas.AutoEffects = Prefs.Bool("autoEffects", false);
             simOpts.Machine = Prefs.Int("retroPreviewComputer", 0, 0, RetroConvert.PreviewFormats.Length - 1);
-            simOpts.Dither = Prefs.Int("retroPreviewDither", 1, 0, 2);
+            simOpts.Dither = Prefs.Int("retroPreviewDither", 1, 0, RetroConvert.DitherNames.Length - 1);
             simOpts.Fill = Prefs.Bool("retroPreviewFill", false);
+            simOpts.Amount = Prefs.Int("retroPreviewAmount", 25, 0, 100);
+            simOpts.Pattern = Prefs.Int("retroPreviewPattern", 0, 0, 1);
+            simOpts.Adjust = PictureAdjust.Clamped(Prefs.Int("retroPreviewBrightness", 0, -100, 100), Prefs.Int("retroPreviewContrast", 0, -100, 100),
+                                                   Prefs.Int("retroPreviewSaturation", 0, -100, 100), Prefs.Int("retroPreviewHue", 0, -180, 180));
             autoAdvance = Prefs.Bool("autoAdvance", false);
             canvas.Filmstrip = Prefs.Bool("filmstrip", false);
             preview.Width = Util.S(Prefs.Int("previewWidth", 320, 180, 2000));
@@ -427,6 +431,12 @@ sealed partial class MainForm : Form
         Prefs.Set("retroPreviewComputer", simOpts.Machine);
         Prefs.Set("retroPreviewDither", simOpts.Dither);
         Prefs.Set("retroPreviewFill", simOpts.Fill);
+        Prefs.Set("retroPreviewAmount", simOpts.Amount);
+        Prefs.Set("retroPreviewPattern", simOpts.Pattern);
+        Prefs.Set("retroPreviewBrightness", simOpts.Adjust.Brightness);
+        Prefs.Set("retroPreviewContrast", simOpts.Adjust.Contrast);
+        Prefs.Set("retroPreviewSaturation", simOpts.Adjust.Saturation);
+        Prefs.Set("retroPreviewHue", simOpts.Adjust.Hue);
         Prefs.Set("autoAdvance", autoAdvance);
         Prefs.Set("filmstrip", canvas.Filmstrip);
         Prefs.Set("previewPane", preview.Visible);

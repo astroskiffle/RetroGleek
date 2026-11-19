@@ -29,6 +29,7 @@ sealed class CompareView : TableLayoutPanel
     public Action<string> TitleChanged;
     public Action<string> Warn;
     public Action<string> FolderWritten;                  // a file was saved into this folder
+    public Action<Form> DarkTitle;                        // gives a small window a dark title bar
     readonly Func<string, string> KeysOf;                 // a command's keys, as the menus show them (MainForm.Commands.cs)
 
     public readonly Canvas LeftView, RightView;
@@ -192,6 +193,7 @@ sealed class CompareView : TableLayoutPanel
         Visible = false;
         LeftView.Release(); RightView.Release();
         if (!wasBa) return;
+        HideAdjustWindow();
         simBar.Visible = false;
         RightView.Simulation = null;
         LeftView.FollowFrames = false;
@@ -211,6 +213,8 @@ sealed class CompareView : TableLayoutPanel
 
     // the retro preview's choices (bar, keys or the Effects menu)
     public void SetSim(int machine, int dither, bool fill) { SimSet(machine, dither, fill); }
+    public void SetSimAmount(int amount, int pattern) { SimAmount(amount, pattern); }
+    public void ShowAdjust() { SimAdjustWindow(); }            // the Adjust window: shown, or hidden if it is open
     public void SaveSim() { SimSave(); }
     public void SaveSimAnim() { SimSaveAnim(); }
 
@@ -235,14 +239,25 @@ sealed class CompareView : TableLayoutPanel
     // the retro preview's bar, above the right picture, in three columns, each control with a short grey note under it:
     //   Computer [box]           [Framing box]          [Save...]
     //            screen, colours  Shift+F changes this   Ctrl+S saves
-    //   Dither   [box]           [Centre the crop]  (only with Fill the screen)
-    //            Q, D change these
+    //   Dither   [box]           [Centre the crop]      [Adjust picture...]
+    //            Q, D change these  (only with Fill)
+    //   Amount   [pattern] [slider] 25%   (a third row, only with Clean edges)
+    //            [ and ] change the amount
     // (the choices are also on the Effects menu)
     readonly Panel rightHost;
     Panel simBar;
     DarkCombo simMachine, simDither, simFrame;
     Label simDetail;                                       // the chosen computer's screen and colours
     Button simCentre;
+    DarkCombo simPattern;                                  // Clean edges: the dithering mixed in, and how much
+    DarkSlider simAmount;
+    Label simAmountPct, simAmountNote;
+    System.Windows.Forms.Timer simAmountTimer;
+    Label simAmountLabel;
+    int simBarH2, simBarH3;                                // the bar's height with two rows, and with the Amount row
+    Button simAdjustButton;                                // opens the small Adjust window (brightness, contrast, ...)
+    Form adjustForm;
+    AdjustPanel adjustPanel;
     bool simSyncing;
 
     // ---- the retro preview's Save (button, Ctrl+S, Effects menu): two new files from the picture shown.
@@ -290,7 +305,9 @@ sealed class CompareView : TableLayoutPanel
         int row1 = Util.S(6), row2 = Util.S(58);                       // each row: a box, then its note under it
         int col1 = Util.S(10), box1 = col1 + Util.S(76);               // labels, then the Computer and Dither boxes
         int col2 = box1 + Util.S(290), col3 = col2 + Util.S(230);      // Framing, then Save
-        simBar = new Panel { Dock = DockStyle.Top, Height = row2 + boxH + noteH + Util.S(8), BackColor = panelBg, Visible = false };
+        int row3 = row2 + (row2 - row1);
+        simBarH2 = row2 + boxH + noteH + Util.S(8); simBarH3 = row3 + boxH + noteH + Util.S(8);
+        simBar = new Panel { Dock = DockStyle.Top, Height = simBarH2, BackColor = panelBg, Visible = false };
         Func<string, int, int, Label> label = delegate (string text, int x, int y)
         {
             var l = new Label { Text = text, Left = x, Top = y, Width = Util.S(76), Height = boxH, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Color.Silver, Font = barFont };
@@ -350,6 +367,34 @@ sealed class CompareView : TableLayoutPanel
         save.Click += delegate { SimSave(); RightView.Focus(); };
         noteUnder(KeysOf("sim-save") + " saves", col3 - Util.S(30), row1, save.Width + Util.S(60), ContentAlignment.TopCenter);
 
+        // column 3, second row: Adjust picture... (brightness, contrast, saturation, hue, before converting)
+        simAdjustButton = button("Adjust picture...", boxBg, Color.FromArgb(72, 72, 72));
+        simAdjustButton.ForeColor = Color.Gainsboro;
+        simAdjustButton.Width = Util.S(130);
+        simAdjustButton.Left = col3 - Util.S(20); simAdjustButton.Top = row2;
+        simAdjustButton.Click += delegate { SimAdjustWindow(); };
+        tip.SetToolTip(simAdjustButton, "Brightness, contrast, saturation and hue of the picture before it is converted (the original is not changed)");
+
+        // third row: Clean edges' dithering, which kind and how much (only with Clean edges)
+        simAmountLabel = label("Amount:", col1, row3);
+        simPattern = box(box1, row3, Util.S(130));
+        simPattern.SetItems("Ordered pattern", "Error diffusion");
+        simAmount = new DarkSlider { Left = box1 + Util.S(138), Top = row3 + Util.S(4), Width = Util.S(150), Height = Util.S(18), Minimum = 0, Maximum = 100 };
+        simBar.Controls.Add(simAmount);
+        simAmountPct = new Label { Left = simAmount.Right + Util.S(6), Top = row3, Width = Util.S(48), Height = boxH, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Color.Silver, Font = barFont };
+        simBar.Controls.Add(simAmountPct);
+        simAmountNote = noteUnder(KeysOf("sim-less") + " and " + KeysOf("sim-more") + " change the amount", box1, row3, Util.S(340), ContentAlignment.TopLeft);
+        simAmountTimer = new System.Windows.Forms.Timer { Interval = 250 };      // the slider: converts again once it rests for a moment
+        simAmountTimer.Tick += delegate { simAmountTimer.Stop(); SimAmount(simAmount.Value, simOpts.Pattern); };
+        simAmount.ValueChanged += delegate
+        {
+            simAmountPct.Text = simAmount.Value + "%";
+            if (simSyncing) return;
+            simAmountTimer.Stop(); simAmountTimer.Start();
+        };
+        simAmount.MouseUp += delegate { RightView.Focus(); };
+        simPattern.SelectedIndexChanged += delegate { if (!simSyncing) SimAmount(simOpts.Amount, simPattern.SelectedIndex); };
+
         simMachine.SelectedIndexChanged += delegate { if (!simSyncing) SimSet(simMachine.SelectedIndex, simOpts.Dither, simOpts.Fill); };
         simDither.SelectedIndexChanged += delegate { if (!simSyncing) SimSet(simOpts.Machine, simDither.SelectedIndex, simOpts.Fill); };
         simFrame.SelectedIndexChanged += delegate { if (!simSyncing) SimSet(simOpts.Machine, simOpts.Dither, simFrame.SelectedIndex == 1); };
@@ -357,6 +402,8 @@ sealed class CompareView : TableLayoutPanel
         tip.SetToolTip(simDither, "How in-between colours are made from the computer's own (" + KeysOf("sim-dither") + " next, Shift+" + KeysOf("sim-dither") + " previous)");
         tip.SetToolTip(simFrame, "Whole picture with black borders, or cropped to fill the computer's screen (" + KeysOf("sim-fill") + "); when cropped, drag the frame on the left picture to choose the part shown");
         tip.SetToolTip(simCentre, "Put the crop back in the middle of the picture");
+        tip.SetToolTip(simPattern, "Clean edges: the kind of dithering mixed in for smooth shading");
+        tip.SetToolTip(simAmount, "Clean edges: how much dithering is mixed in (" + KeysOf("sim-less") + " less, " + KeysOf("sim-more") + " more). 0% = flat colours only; the picture's edges stay flat at every amount");
         tip.SetToolTip(save, "Save the picture as this computer's own file (as previewed, without screen effects), and a PNG of the screen with its effects to share (" + KeysOf("sim-save") + ")");
     }
 
@@ -567,10 +614,97 @@ sealed class CompareView : TableLayoutPanel
     }
 
     // e.g. "ZX Spectrum, ordered dithering, whole picture"
+    // (Clean edges on the ZX Spectrum: "clean edges + 25% ordered dithering")
     string SimText()
     {
-        return RetroConvert.PreviewShort[simOpts.Machine] + ", " + RetroConvert.DitherShort[simOpts.Dither] + ", " + (simOpts.Fill ? "filling the screen" : "whole picture");
+        string dither = RetroConvert.DitherShort[simOpts.Dither];
+        if (SimAmountShown()) dither += simOpts.Amount == 0 ? ", no dithering" : " + " + simOpts.Amount + "% " + (simOpts.Pattern == 1 ? "error diffusion" : "ordered dithering");
+        string adjusted = simOpts.Adjust != null && !simOpts.Adjust.IsNeutral ? ", adjusted (" + simOpts.Adjust.Text() + ")" : "";
+        return RetroConvert.PreviewShort[simOpts.Machine] + ", " + dither + ", " + (simOpts.Fill ? "filling the screen" : "whole picture") + adjusted;
     }
+
+    // ---- Adjust picture: a small window with the four sliders, Auto and Reset, beside the retro preview. Each change
+    // converts the picture again (once the sliders rest); the values are remembered with the other choices.
+
+    void SimAdjustWindow()
+    {
+        if (adjustForm != null && adjustForm.Visible) { adjustForm.Hide(); RightView.Focus(); return; }
+        if (adjustForm == null)
+        {
+            Color back = Color.FromArgb(38, 38, 38);
+            adjustForm = new Form
+            {
+                Text = "Adjust the picture", FormBorderStyle = FormBorderStyle.FixedToolWindow, ShowInTaskbar = false,
+                StartPosition = FormStartPosition.Manual, BackColor = back, ForeColor = Color.Gainsboro, KeyPreview = true,
+                AutoScaleMode = AutoScaleMode.None, Font = new Font("Segoe UI", 9.5f)
+            };
+            int pad = Util.S(12);
+            adjustPanel = new AdjustPanel(back, Color.Gainsboro, adjustForm.Font, Util.S(360)) { Left = pad, Top = pad };
+            var note = new Label
+            {
+                Left = pad, Top = adjustPanel.Bottom + Util.S(4), Width = adjustPanel.Width, Height = Util.S(36), ForeColor = Color.FromArgb(150, 150, 150),
+                Font = new Font("Segoe UI", 8.5f), Text = "Changes the picture before it is converted, so Save keeps it too. The original file is not changed."
+            };
+            adjustForm.Controls.Add(adjustPanel); adjustForm.Controls.Add(note);
+            adjustForm.ClientSize = new Size(adjustPanel.Width + pad * 2, note.Bottom + pad);
+            adjustPanel.Changed += delegate { SimAdjust(adjustPanel.Value); };
+            adjustPanel.AutoClicked += delegate { SimAuto(); };
+            adjustForm.FormClosing += delegate (object o, FormClosingEventArgs e)
+            {
+                if (e.CloseReason != CloseReason.UserClosing) return;
+                e.Cancel = true;                                   // the X only hides it
+                adjustForm.Hide();
+                if (Visible) RightView.Focus();
+            };
+            adjustForm.KeyDown += delegate (object o, KeyEventArgs e)
+            {
+                if (e.KeyCode == Keys.Escape) { e.Handled = true; adjustForm.Hide(); RightView.Focus(); }
+            };
+            if (DarkTitle != null) adjustForm.HandleCreated += delegate { DarkTitle(adjustForm); };
+        }
+        adjustPanel.Value = simOpts.Adjust;
+        Point at = simAdjustButton.PointToScreen(new Point(0, simAdjustButton.Height + Util.S(4)));
+        Rectangle wa = Screen.FromControl(this).WorkingArea;
+        at.X = Math.Max(wa.Left, Math.Min(wa.Right - adjustForm.Width, at.X));
+        at.Y = Math.Max(wa.Top, Math.Min(wa.Bottom - adjustForm.Height, at.Y));
+        adjustForm.Location = at;
+        adjustForm.Show(FindForm());
+    }
+
+    void HideAdjustWindow() { if (adjustForm != null && adjustForm.Visible) adjustForm.Hide(); }
+
+    // a new adjustment of the picture (the Adjust window); converts the picture again when the preview is open
+    void SimAdjust(PictureAdjust a)
+    {
+        a = a == null ? new PictureAdjust() : a.Copy();
+        PictureAdjust now = simOpts.Adjust ?? new PictureAdjust();
+        if (a.Brightness == now.Brightness && a.Contrast == now.Contrast && a.Saturation == now.Saturation && a.Hue == now.Hue) return;
+        simOpts.Adjust = a;
+        if (adjustPanel != null && adjustForm.Visible) adjustPanel.Value = a;
+        if (!beforeAfter || !baSim) return;
+        RightView.Simulation = simOpts;
+        BaMatch();
+        BaTitle();
+        RightView.ShowMessage(SimText());
+    }
+
+    // Auto: brightness and contrast from the picture shown (an animation: its first frame)
+    void SimAuto()
+    {
+        if (baPath == null) return;
+        Cursor was = Cursor.Current;
+        Cursor.Current = Cursors.WaitCursor;
+        try
+        {
+            using (Bitmap src = Exporter.Decode(baPath, 0))
+                adjustPanel.SetAndApply(RetroConvert.AutoLevels(src, adjustPanel.Value));
+        }
+        catch (Exception ex) { Warn("Auto could not read " + Path.GetFileName(baPath) + ": " + Util.Why(ex)); }
+        finally { Cursor.Current = was; }
+    }
+
+    // the dithering amount applies: Clean edges
+    bool SimAmountShown() { return simOpts.Dither == 3; }
 
     void SyncSimBar()
     {
@@ -580,10 +714,34 @@ sealed class CompareView : TableLayoutPanel
             simMachine.SelectedIndex = simOpts.Machine;
             simDither.SelectedIndex = simOpts.Dither;
             simFrame.SelectedIndex = simOpts.Fill ? 1 : 0;
+            simPattern.SelectedIndex = simOpts.Pattern == 1 ? 1 : 0;
+            simAmount.Value = simOpts.Amount;
+            simAmountPct.Text = simOpts.Amount + "%";
         }
         finally { simSyncing = false; }
         simCentre.Visible = simOpts.Fill;
+        bool amountOn = SimAmountShown();
+        simAmountLabel.Visible = simPattern.Visible = simAmount.Visible = simAmountPct.Visible = simAmountNote.Visible = amountOn;
+        simBar.Height = amountOn ? simBarH3 : simBarH2;
         simDetail.Text = RetroConvert.PreviewDetails[simOpts.Machine];
+    }
+
+    // Clean edges: a new dithering amount (0..100) or kind (0 ordered, 1 error diffusion), from the bar, [ and ] or the
+    // Effects menu. Switches to Clean edges first if another dithering is chosen.
+    void SimAmount(int amount, int pattern)
+    {
+        simAmountTimer.Stop();
+        amount = Math.Max(0, Math.Min(100, amount));
+        pattern = pattern == 1 ? 1 : 0;
+        if (simOpts.Dither != 3) { simOpts.Amount = amount; simOpts.Pattern = pattern; SimSet(simOpts.Machine, 3, simOpts.Fill); return; }
+        if (amount == simOpts.Amount && pattern == simOpts.Pattern) return;
+        simOpts.Amount = amount; simOpts.Pattern = pattern;
+        SyncSimBar();
+        if (!beforeAfter || !baSim) return;
+        RightView.Simulation = simOpts;
+        BaMatch();
+        BaTitle();
+        RightView.ShowMessage(SimText());
     }
 
     // a new retro preview choice (bar, keys or the Effects menu); converts the picture again when the preview is open
@@ -591,7 +749,8 @@ sealed class CompareView : TableLayoutPanel
     {
         int n = RetroConvert.PreviewFormats.Length;
         machine = ((machine % n) + n) % n;
-        dither = ((dither % 3) + 3) % 3;
+        int nd = RetroConvert.DitherNames.Length;
+        dither = ((dither % nd) + nd) % nd;
         if (machine == simOpts.Machine && dither == simOpts.Dither && fill == simOpts.Fill) return;
         simOpts.Machine = machine; simOpts.Dither = dither; simOpts.Fill = fill;
         SyncSimBar();
@@ -671,6 +830,8 @@ sealed class CompareView : TableLayoutPanel
             if (k == Keys.Q) { SimSet(simOpts.Machine + (shift ? -1 : 1), simOpts.Dither, simOpts.Fill); return true; }   // computer
             if (k == Keys.D) { SimSet(simOpts.Machine, simOpts.Dither + (shift ? -1 : 1), simOpts.Fill); return true; }   // dithering
             if (k == Keys.F && shift) { SimSet(simOpts.Machine, simOpts.Dither, !simOpts.Fill); return true; }          // framing
+            if (k == Keys.OemOpenBrackets && !shift) { SimAmount(simOpts.Amount - 10, simOpts.Pattern); return true; }  // Clean edges: less dithering
+            if (k == Keys.OemCloseBrackets && !shift) { SimAmount(simOpts.Amount + 10, simOpts.Pattern); return true; } // Clean edges: more dithering
             if (k == Keys.R || k == Keys.L || k == Keys.H || k == Keys.V) return true;   // the conversion is of the upright picture
             if (k == Keys.P || k == Keys.Oemcomma || k == Keys.OemPeriod) return RightView.HandleKey(keyData);   // animation: the left side follows
         }

@@ -30,6 +30,7 @@ partial class MainForm
         cmp.IsFullscreen = () => full;
         cmp.TitleChanged = t => Text = t;
         cmp.Warn = Warn;
+        cmp.DarkTitle = DarkTitle;
         cmp.FolderWritten = FilesChanged;                  // one of the retro preview's files was saved there
         foreach (Control c in new Control[] { cmp.LeftView, cmp.RightView })
         {
@@ -50,6 +51,7 @@ partial class MainForm
     }
 
     void SimSet(int machine, int dither, bool fill) { cmp.SetSim(machine, dither, fill); }
+    void SimAmount(int amount, int pattern) { cmp.SetSimAmount(amount, pattern); }
     void SimSave() { cmp.SaveSim(); }
     void SimSaveAnim() { cmp.SaveSimAnim(); }
 

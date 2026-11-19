@@ -94,6 +94,8 @@ partial class MainForm
             case Keys.Subtract: name = "-"; break;
             case Keys.Oemcomma: name = ","; break;
             case Keys.OemPeriod: name = "."; break;
+            case Keys.OemOpenBrackets: name = "["; break;
+            case Keys.OemCloseBrackets: name = "]"; break;
             default: name = k.ToString(); break;
         }
         return mods + name;
@@ -338,10 +340,31 @@ partial class MainForm
         });
         AddCommand(new Command { Id = "sim-computer", Text = "Retro preview c&omputer", ShownKeys = "Q", Run = () => { }, InCompare = true });
         AddCommand(new Command { Id = "sim-dither", Text = "Retro preview &dithering", ShownKeys = "D", Run = () => { }, InCompare = true });
+        // Clean edges: how much dithering is mixed in; the keys work in the retro preview (CompareView)
+        AddCommand(new Command
+        {
+            Id = "sim-less", Text = "Clean edges: &less dithering (-10%)", ShownKeys = "[",
+            Run = () => SimAmount(simOpts.Amount - 10, simOpts.Pattern), On = () => simOpts.Amount > 0 || simOpts.Dither != 3, InCompare = true
+        });
+        AddCommand(new Command
+        {
+            Id = "sim-more", Text = "Clean edges: &more dithering (+10%)", ShownKeys = "]",
+            Run = () => SimAmount(simOpts.Amount + 10, simOpts.Pattern), On = () => simOpts.Amount < 100 || simOpts.Dither != 3, InCompare = true
+        });
+        AddCommand(new Command
+        {
+            Id = "sim-diffuse", Text = "Clean edges: dither with &error diffusion (instead of the ordered pattern)",
+            Run = () => SimAmount(simOpts.Amount, simOpts.Pattern == 1 ? 0 : 1), Checked = () => simOpts.Pattern == 1, InCompare = true
+        });
         AddCommand(new Command
         {
             Id = "sim-fill", Text = "Retro preview: &fill the screen (crop)", ShownKeys = "Shift+F",
             Run = () => SimSet(simOpts.Machine, simOpts.Dither, !simOpts.Fill), Checked = () => simOpts.Fill, InCompare = true
+        });
+        AddCommand(new Command
+        {
+            Id = "sim-adjust", Text = "Retro preview: ad&just the picture (brightness, contrast, saturation, hue)...",
+            Run = () => cmp.ShowAdjust(), On = () => beforeAfter && baSim, InCompare = true
         });
         AddCommand(new Command
         {

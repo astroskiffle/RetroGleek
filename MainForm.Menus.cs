@@ -395,7 +395,12 @@ partial class MainForm
                       delegate { SimSet(simOpts.Machine, d, simOpts.Fill); }, null, delegate { return simOpts.Dither == d; });
             LastEntry.InCompare = true;
         }
+        MenuSep(simDith);
+        MenuCmd(simDith, "sim-less");
+        MenuCmd(simDith, "sim-more");
+        MenuCmd(simDith, "sim-diffuse");
         MenuCmd(effects, "sim-fill");
+        MenuCmd(effects, "sim-adjust");
         MenuCmd(effects, "sim-save");
         MenuCmd(effects, "sim-save-anim");
         MenuCmd(effects, "auto");
@@ -675,10 +680,14 @@ partial class MainForm
                                                KeysOf("sim-computer") + " / Shift+" + KeysOf("sim-computer") + " computer, " +
                                                KeysOf("sim-dither") + " / Shift+" + KeysOf("sim-dither") + " dithering, " +
                                                KeysOf("sim-fill") + " whole picture or fill the screen\n" +
-                                               "(also the bar above the right picture and the Effects menu); with Fill the screen,\n" +
+                                               "(also the bar above the right picture and the Effects menu); Adjust picture... on the\n" +
+                                               "bar changes brightness, contrast, saturation and hue before converting; with Fill the screen,\n" +
                                                "drag the frame on the left picture to choose the part shown;\n" +
                                                "an animated GIF or WebP plays on both sides (" + KeysOf("anim-pause") + " pauses, " +
                                                KeysOf("prev-frame") + " and " + KeysOf("next-frame") + " step)"));
+        L.Add(HelpLine(Keys2("sim-less", "sim-more") + " (retro preview)", "Clean edges: less / more dithering mixed in, 10% a step\n" +
+                                               "(0% = flat colours only; the picture's edges stay flat at every amount;\n" +
+                                               "the kind, ordered or error diffusion, is on the bar and the Effects menu)"));
         L.Add(HelpLine(KeysOf("sim-save") + " (retro preview)", "save the computer's own file (.scr, .koa, .dd, .sc2), as previewed and without\n" +
                                                "screen effects, plus a PNG of the screen with its effects beside it, to share\n" +
                                                "(an animation: the frame shown; it pauses there)"));

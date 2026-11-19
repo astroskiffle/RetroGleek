@@ -43,7 +43,10 @@ sealed class ConvertOptions
 {
     public int Format;           // index into RetroConvert.FormatNames (0 = ZX Spectrum .scr)
     public bool Fill;            // false: the whole picture with black borders; true: cropped to fill the screen
-    public int Dither;           // 0 none, 1 ordered pattern, 2 error diffusion
+    public int Dither;           // 0 none, 1 ordered pattern, 2 error diffusion, 3 clean edges (with Amount and Pattern)
+    public int Amount = 25;      // clean edges: how much dithering is mixed in, 0 (none) .. 100 (full)
+    public int Pattern;          // clean edges: the dithering mixed in, 0 ordered pattern, 1 error diffusion
+    public PictureAdjust Adjust; // brightness, contrast, saturation, hue of the picture before converting, or null
     public string DestDir;       // where the new files go
     public int[] Lock;           // retro preview of an animation: colours kept for every frame (PreviewLock), else null
 }
@@ -52,10 +55,17 @@ sealed class ConvertOptions
 sealed class RetroSim
 {
     public int Machine;          // index into RetroConvert.PreviewFormats
-    public int Dither;           // 0 none, 1 ordered pattern, 2 error diffusion
+    public int Dither;           // 0 none, 1 ordered pattern, 2 error diffusion, 3 clean edges (with Amount and Pattern)
     public bool Fill;            // false: the whole picture with black borders; true: cropped to fill the screen
+    public int Amount = 25;      // clean edges: how much dithering is mixed in, 0 (none) .. 100 (full)
+    public int Pattern;          // clean edges: the dithering mixed in, 0 ordered pattern, 1 error diffusion
+    public PictureAdjust Adjust = new PictureAdjust();   // the picture's brightness, contrast, ... before converting
     public double CropX = 0.5, CropY = 0.5;   // Fill: where the crop sits, 0 = left / top edge, 1 = right / bottom edge
-    public RetroSim Copy() { return new RetroSim { Machine = Machine, Dither = Dither, Fill = Fill, CropX = CropX, CropY = CropY }; }
+    public RetroSim Copy()
+    {
+        return new RetroSim { Machine = Machine, Dither = Dither, Fill = Fill, Amount = Amount, Pattern = Pattern,
+                              Adjust = Adjust == null ? new PictureAdjust() : Adjust.Copy(), CropX = CropX, CropY = CropY };
+    }
 }
 
 static class RetroConvert
@@ -73,10 +83,11 @@ static class RetroConvert
         "MSX2 Screen 8 .sc8  -  256 x 212, 256 fixed colours"
     };
     static readonly string[] FormatExts = { ".scr", ".koa", ".dd", ".scr", ".scr", ".pi1", ".iff", ".sc2", ".sc8" };
-    public static readonly string[] DitherNames = { "None (flat colours)", "Ordered pattern (typical of the time)", "Error diffusion (finest detail)" };
+    public static readonly string[] DitherNames = { "None (flat colours)", "Ordered pattern (typical of the time)", "Error diffusion (finest detail)", "Clean edges (+ adjustable dithering)" };
 
     // what was chosen last time while RetroGleek runs (not saved)
-    static int lastDither = 1, lastFormat;
+    static int lastDither = 1, lastFormat, lastAmount = 25, lastPattern;
+    static PictureAdjust lastAdjust = new PictureAdjust();
     static bool lastFill;
 
     // ---------------------------------------------------------------- RECOIL: palette and checking
@@ -146,7 +157,25 @@ static class RetroConvert
 
     // The source fitted into w x h pixels that are pxw times as wide as they are tall: the whole picture with black
     // borders, or cropped to fill. Transparency becomes black. Returns RGB as floats (3 per pixel).
-    static float[] Fit(Bitmap src, int w, int h, bool fill, int pxw)
+    static float[] Fit(Bitmap src, int w, int h, bool fill, int pxw) { return Fit(src, w, h, fill, pxw, 0, 0); }
+
+    // the size the picture is drawn at on the screen (larger than the screen with fill, smaller or equal without)
+    static void FitSize(Bitmap src, int w, int h, bool fill, int pxw, out int nw, out int nh)
+    {
+        double dw = (double)w * pxw;
+        double s = fill ? Math.Max(dw / src.Width, (double)h / src.Height) : Math.Min(dw / src.Width, (double)h / src.Height);
+        nw = Math.Max(1, (int)Math.Round(src.Width * s / pxw)); nh = Math.Max(1, (int)Math.Round(src.Height * s));
+    }
+
+    // The adjustment (brightness, contrast, ...) Fit draws the picture with: set by Render and PreviewLock for the
+    // conversion they make on this thread, null otherwise. Every converter fits its picture with Fit, so each one,
+    // and Clean edges' position search and an animation's kept colours, see the same adjusted picture.
+    [ThreadStatic] static PictureAdjust fitAdjust;
+
+    static PictureAdjust Active(PictureAdjust a) { return a != null && !a.IsNeutral ? a : null; }
+
+    // ... moved ox, oy screen pixels from the centre (Clean edges lines the picture up with the colour blocks)
+    static float[] Fit(Bitmap src, int w, int h, bool fill, int pxw, int ox, int oy)
     {
         int[] px = new int[w * h];
         using (var b = new Bitmap(w, h, PixelFormat.Format32bppArgb))
@@ -155,13 +184,13 @@ static class RetroConvert
             using (var ia = new ImageAttributes())
             {
                 g.Clear(Color.Black);
-                double dw = (double)w * pxw;                                          // the screen's width as shown (wide pixels)
-                double s = fill ? Math.Max(dw / src.Width, (double)h / src.Height) : Math.Min(dw / src.Width, (double)h / src.Height);
-                int nw = Math.Max(1, (int)Math.Round(src.Width * s / pxw)), nh = Math.Max(1, (int)Math.Round(src.Height * s));
+                int nw, nh;
+                FitSize(src, w, h, fill, pxw, out nw, out nh);                       // (the screen's width as shown: wide pixels)
                 g.InterpolationMode = InterpolationMode.HighQualityBicubic;
                 g.PixelOffsetMode = PixelOffsetMode.HighQuality;
                 ia.SetWrapMode(WrapMode.TileFlipXY);                                // no dark fringe at the edges
-                g.DrawImage(src, new Rectangle((w - nw) / 2, (h - nh) / 2, nw, nh), 0, 0, src.Width, src.Height, GraphicsUnit.Pixel, ia);
+                if (fitAdjust != null) ia.SetColorMatrix(fitAdjust.Matrix());       // the picture only: borders stay black
+                g.DrawImage(src, new Rectangle((w - nw) / 2 + ox, (h - nh) / 2 + oy, nw, nh), 0, 0, src.Width, src.Height, GraphicsUnit.Pixel, ia);
             }
             BitmapData bd = b.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
             try { for (int y = 0; y < h; y++) Marshal.Copy(new IntPtr(bd.Scan0.ToInt64() + (long)y * bd.Stride), px, y * w, w); }
@@ -187,8 +216,18 @@ static class RetroConvert
     };
 
     // The .scr bytes for a picture, and the picture as that file shows it (256 x 192, 0xFFRRGGBB).
-    public static byte[] ToZx(Bitmap src, bool fill, int dither, out int[] shown)
+    public static byte[] ToZx(Bitmap src, bool fill, int dither, out int[] shown) { return ToZx(src, fill, dither, out shown, null); }
+
+    // lockOffset: Clean edges in an animation: the same position for every frame (PreviewLock), or null
+    public static byte[] ToZx(Bitmap src, bool fill, int dither, out int[] shown, int[] lockOffset)
     {
+        return ToZx(src, fill, dither, out shown, lockOffset, 25, 0);
+    }
+
+    // amount, pattern: Clean edges only: how much dithering (0..100) of which kind (0 ordered, 1 error diffusion)
+    public static byte[] ToZx(Bitmap src, bool fill, int dither, out int[] shown, int[] lockOffset, int amount, int pattern)
+    {
+        if (dither == 3) return ToZxClean(src, fill, lockOffset, amount, pattern, out shown);
         const int W = 256, H = 192;
         int[] pal = ZxPalette();
         var pr = new float[16]; var pg = new float[16]; var pb = new float[16];
@@ -256,7 +295,13 @@ static class RetroConvert
             }
         }
 
-        // the file, and what it shows
+        return ZxFile(isInk, paper, ink, pal, out shown);
+    }
+
+    // the .scr bytes for these pixels (ink or paper) and block colours, and the picture the file shows
+    static byte[] ZxFile(bool[] isInk, int[] paper, int[] ink, int[] pal, out int[] shown)
+    {
+        const int W = 256, H = 192;
         var d = new byte[6912];
         shown = new int[W * H];
         for (int y = 0; y < H; y++)
@@ -270,6 +315,438 @@ static class RetroConvert
         for (int cell = 0; cell < 768; cell++)
             d[6144 + cell] = (byte)(((ink[cell] >> 3) << 6) | ((paper[cell] & 7) << 3) | (ink[cell] & 7));   // no flash
         return d;
+    }
+
+    // ---- Clean edges, with an adjustable amount of dithering (every computer)
+    // For the computers with colours per block (ZX Spectrum 8 x 8 with two colours of one brightness, C64 hires 8 x 8
+    // with two colours, MSX Screen 2 8 x 1 with two colours, C64 multicolour 4 x 8 with three colours and the screen's
+    // shared background), the colours are chosen with three things the other modes don't do:
+    //   1. Each block's colours are judged as they will look: every pixel takes the nearest of them (the other modes
+    //      judge them by how well MIXES of them cover the block, which suits dithering).
+    //   2. The picture is moved by up to half a block across and down (only within its black borders, or within the
+    //      part a filled screen crops anyway), to the place where its edges fall best on the block grid. Nothing is
+    //      cut off.
+    //   3. Neighbouring blocks choose together: a block may take its second- or third-best colours when that avoids
+    //      a colour step along its border that the picture doesn't have, so an edge keeps the same colours along its
+    //      length instead of changing from block to block.
+    // The dithering amount (0..100%) mixes dithering back in, for smooth shading, without giving up the clean edges:
+    //   - a block's colours are judged partly flat and partly by how well their mixes cover it (100% = as the
+    //     dithering modes judge them), and the border check counts for less as the amount goes up;
+    //   - each pixel is dithered by the amount, less where the picture has an edge: across a clear step between
+    //     neighbouring pixels it stays flat (the nearest colour), so outlines stay crisp while gradients get a pattern.
+    // The computers with one palette for the whole screen (Amstrad CPC, Atari ST, Amiga, MSX2 Screen 8) have no
+    // blocks: for them only the second half applies (dithering that keeps edges flat).
+    // 0% is flat colours only. The position on the grid is chosen flat at every amount. Every file is checked by
+    // RECOIL as always.
+
+    const int CleanKeep = 8;                               // colour choices kept for each block, best first
+    const float CleanSeam = 2f;                            // how much a false colour step along a border counts
+    const float CleanEdgeLo = 40f, CleanEdgeHi = 120f;    // a step between neighbours from here (flat at the top)
+
+    // a computer with colours per block, as Clean edges sees it
+    sealed class CellSpec
+    {
+        public int W, H, CellW, CellH, Pxw;               // the screen, a block, the pixel width the picture is fitted at
+        public float[] Pr, Pg, Pb;                         // the 16 colours
+        public int[][] Groups;                             // a block's own colours all come from one group
+        public int Own;                                    // colours of a block's own: 2 or 3
+        public int Shared = -1;                            // a colour every block has as well (C64 multicolour), or -1
+        public int DiffW, DiffH;                           // error diffusion stays within blocks of this size
+        public int Cols { get { return W / CellW; } }
+        public int Cells { get { return (W / CellW) * (H / CellH); } }
+        public int Size { get { return Own + (Shared >= 0 ? 1 : 0); } }   // colours per block: the shared one first
+    }
+
+    static float[] Floats(int[] pal, int ch) { var f = new float[pal.Length]; for (int c = 0; c < pal.Length; c++) f[c] = (pal[c] >> (16 - 8 * ch)) & 255; return f; }
+
+    static int[] Range(int from, int count) { var r = new int[count]; for (int i = 0; i < count; i++) r[i] = from + i; return r; }
+
+    static CellSpec ZxSpec()
+    {
+        int[] pal = ZxPalette();
+        return new CellSpec { W = 256, H = 192, CellW = 8, CellH = 8, Pxw = 1, Pr = Floats(pal, 0), Pg = Floats(pal, 1), Pb = Floats(pal, 2),
+                              Groups = new[] { Range(0, 8), Range(8, 8) }, Own = 2, DiffW = 8, DiffH = 8 };
+    }
+
+    static CellSpec DoodleSpec()
+    {
+        int[] pal = C64Palette();
+        return new CellSpec { W = 320, H = 200, CellW = 8, CellH = 8, Pxw = 1, Pr = Floats(pal, 0), Pg = Floats(pal, 1), Pb = Floats(pal, 2),
+                              Groups = new[] { Range(0, 16) }, Own = 2, DiffW = 8, DiffH = 8 };
+    }
+
+    static CellSpec Sc2Spec()
+    {
+        int[] pal = MsxPalette();
+        return new CellSpec { W = 256, H = 192, CellW = 8, CellH = 1, Pxw = 1, Pr = Floats(pal, 0), Pg = Floats(pal, 1), Pb = Floats(pal, 2),
+                              Groups = new[] { Range(1, 15) }, Own = 2, DiffW = 8, DiffH = 192 };   // (colour 0 is transparent)
+    }
+
+    static CellSpec KoalaSpec(int bg)
+    {
+        int[] pal = C64Palette();
+        var others = new int[15];
+        for (int c = 0, n = 0; c < 16; c++) if (c != bg) others[n++] = c;
+        return new CellSpec { W = 160, H = 200, CellW = 4, CellH = 8, Pxw = 2, Pr = Floats(pal, 0), Pg = Floats(pal, 1), Pb = Floats(pal, 2),
+                              Groups = new[] { others }, Own = 3, Shared = bg, DiffW = 4, DiffH = 8 };
+    }
+
+    // Clean edges on a computer with colours per block. cols: each block's colours (Size of them, the shared one
+    // first, then its own in rising order); pick: each pixel's colour as an index into its block's colours.
+    // lockOffset: an animation's position on the grid, the same for every frame (PreviewLock), or null.
+    static void CleanCells(Bitmap src, bool fill, CellSpec sp, int[] lockOffset, int amount, int pattern, out int[] cols, out byte[] pick)
+    {
+        int W = sp.W, H = sp.H, m = sp.Size, cells = sp.Cells, ncols = sp.Cols;
+        float a = Math.Max(0, Math.Min(100, amount)) / 100f;
+        int ox, oy;
+        if (lockOffset != null && lockOffset.Length == 2) { ox = lockOffset[0]; oy = lockOffset[1]; }
+        else CleanBestOffset(new[] { src }, fill, sp, out ox, out oy);
+        int lox, hix, loy, hiy;
+        CleanSlack(src, fill, sp, out lox, out hix, out loy, out hiy);
+        ox = Math.Max(lox, Math.Min(hix, ox)); oy = Math.Max(loy, Math.Min(hiy, oy));
+        float[] img = Fit(src, W, H, fill, sp.Pxw, ox, oy);
+        var d = new float[W * H * 16];
+        CleanDistances(img, sp, d);
+        var ch = new int[cells][][]; var ce = new float[cells][];
+        CleanChoices(d, sp, CleanKeep, ch, ce, img, a);
+
+        // neighbouring blocks choose together (a few rounds, each block in turn against its neighbours' choice)
+        var pd = new float[256];                           // distances between the 16 colours (not squared)
+        for (int i = 0; i < 16; i++)
+            for (int j = 0; j < 16; j++) pd[i * 16 + j] = (float)Math.Sqrt(Dist(sp.Pr[i], sp.Pg[i], sp.Pb[i], sp.Pr[j], sp.Pg[j], sp.Pb[j]));
+        float[] sd = Steps(img, W, H);
+        var choice = new int[cells];
+        float seam = CleanSeam * (1f - a);
+        for (int round = 0; round < 4 && seam > 0; round++)
+        {
+            bool changed = false;
+            for (int cell = 0; cell < cells; cell++)
+            {
+                int best = choice[cell];
+                float bestCost = float.MaxValue;
+                for (int o = 0; o < ch[cell].Length; o++)
+                {
+                    float cost = ce[cell][o] + seam * CleanSeams(d, sd, pd, sp, ch, choice, cell, o);
+                    if (cost < bestCost - 1e-3f) { bestCost = cost; best = o; }
+                }
+                if (best != choice[cell]) { choice[cell] = best; changed = true; }
+            }
+            if (!changed) break;
+        }
+        cols = new int[cells * m];
+        for (int cell = 0; cell < cells; cell++) Array.Copy(ch[cell][choice[cell]], 0, cols, cell * m, m);
+
+        pick = new byte[W * H];
+        float[] ap = a > 0 ? EdgeAmount(sd, W, H, a) : null;
+        float[] work = pattern == 1 && a > 0 ? (float[])img.Clone() : img;
+        for (int y = 0; y < H; y++)
+        {
+            bool rev = pattern == 1 && a > 0 && (y & 1) == 1;                      // serpentine: every other line right to left
+            for (int n = 0; n < W; n++)
+            {
+                int x = rev ? W - 1 - n : n, i = y * W + x;
+                int cell = (y / sp.CellH) * ncols + x / sp.CellW, at = cell * m;
+                int best = 0;
+                if (a <= 0)                                                        // flat: the nearest of the block's colours
+                {
+                    for (int c = 1; c < m; c++) if (d[i * 16 + cols[at + c]] < d[i * 16 + cols[at + best]]) best = c;
+                }
+                else
+                {
+                    int k = i * 3;
+                    float vr = work[k], vg = work[k + 1], vb = work[k + 2];
+                    if (pattern == 1)
+                    {
+                        float bd = float.MaxValue;
+                        for (int c = 0; c < m; c++)
+                        {
+                            int cc = cols[at + c];
+                            float dd = Dist(vr, vg, vb, sp.Pr[cc], sp.Pg[cc], sp.Pb[cc]);
+                            if (dd < bd) { bd = dd; best = c; }
+                        }
+                        int cb = cols[at + best];
+                        float f = ap[i];
+                        if (f > 0) DiffuseIn(work, W, H, x, y, rev ? -1 : 1, (vr - sp.Pr[cb]) * f, (vg - sp.Pg[cb]) * f, (vb - sp.Pb[cb]) * f, sp.DiffW, sp.DiffH);
+                    }
+                    else
+                    {
+                        // the two of the block's colours whose mixes come nearest, and the pattern between them
+                        float bd = float.MaxValue, bt = 0;
+                        int bi = 0, bj = 0;
+                        for (int c1 = 0; c1 < m; c1++)
+                            for (int c2 = c1 + 1; c2 < m; c2++)
+                            {
+                                int p1 = cols[at + c1], p2 = cols[at + c2];
+                                if (p1 == p2) continue;
+                                float t;
+                                float dd = SegDist(vr, vg, vb, sp.Pr[p1], sp.Pg[p1], sp.Pb[p1], sp.Pr[p2], sp.Pg[p2], sp.Pb[p2], out t);
+                                if (dd < bd - 1e-6f) { bd = dd; bt = t; bi = c1; bj = c2; }
+                            }
+                        best = bt > 0.5f + ap[i] * ((Bayer8[(y & 7) * 8 + (x & 7)] + 0.5f) / 64f - 0.5f) ? bj : bi;   // 0: the nearer colour
+                    }
+                }
+                pick[i] = (byte)best;
+            }
+        }
+    }
+
+    // how different each pixel is from its right and lower neighbour: [pixel * 2] and [pixel * 2 + 1] (not squared)
+    static float[] Steps(float[] img, int W, int H)
+    {
+        var sd = new float[W * H * 2];
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                int k = (y * W + x) * 3;
+                if (x + 1 < W) { int k2 = k + 3; sd[(y * W + x) * 2] = (float)Math.Sqrt(Dist(img[k], img[k + 1], img[k + 2], img[k2], img[k2 + 1], img[k2 + 2])); }
+                if (y + 1 < H) { int k2 = k + W * 3; sd[(y * W + x) * 2 + 1] = (float)Math.Sqrt(Dist(img[k], img[k + 1], img[k + 2], img[k2], img[k2 + 1], img[k2 + 2])); }
+            }
+        return sd;
+    }
+
+    // how much each pixel is dithered: the amount a (0..1), less across a clear step to a neighbour (none at a hard edge)
+    static float[] EdgeAmount(float[] sd, int W, int H, float a)
+    {
+        var ap = new float[W * H];
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                int i = y * W + x;
+                float edge = Math.Max(sd[i * 2], sd[i * 2 + 1]);
+                if (x > 0) edge = Math.Max(edge, sd[(i - 1) * 2]);
+                if (y > 0) edge = Math.Max(edge, sd[(i - W) * 2 + 1]);
+                float protect = 1f - Math.Max(0f, Math.Min(1f, (edge - CleanEdgeLo) / (CleanEdgeHi - CleanEdgeLo)));
+                ap[i] = a * protect;
+            }
+        return ap;
+    }
+
+    // how far the picture may move each way: up to half a block, within its black borders or within what a filled
+    // screen crops anyway
+    static void CleanSlack(Bitmap src, bool fill, CellSpec sp, out int lox, out int hix, out int loy, out int hiy)
+    {
+        int nw, nh;
+        FitSize(src, sp.W, sp.H, fill, sp.Pxw, out nw, out nh);
+        int mx = Math.Abs(sp.W - nw) / 2, my = Math.Abs(sp.H - nh) / 2;
+        lox = -Math.Min(sp.CellW / 2, mx); hix = Math.Min(sp.CellW / 2 - 1, mx);
+        loy = -Math.Min(sp.CellH / 2, my); hiy = Math.Max(0, Math.Min(sp.CellH / 2 - 1, my));
+    }
+
+    // The position where the pictures' edges fall best on the colour blocks: the least total error with the best
+    // colours in every block (several pictures: the frames of an animation, which all take the same position).
+    // The centre wins unless another position is clearly better.
+    static void CleanBestOffset(IList<Bitmap> pics, bool fill, CellSpec sp, out int bx, out int by)
+    {
+        bx = 0; by = 0;
+        if (pics.Count == 0) return;
+        int lox, hix, loy, hiy;
+        CleanSlack(pics[0], fill, sp, out lox, out hix, out loy, out hiy);
+        if (lox == 0 && hix == 0 && loy == 0 && hiy == 0) return;
+        var d = new float[sp.W * sp.H * 16];
+        double centre = 0, best = double.MaxValue;
+        for (int oy = loy; oy <= hiy; oy++)
+            for (int ox = lox; ox <= hix; ox++)
+            {
+                double total = 0;
+                foreach (Bitmap b in pics)
+                {
+                    CleanDistances(Fit(b, sp.W, sp.H, fill, sp.Pxw, ox, oy), sp, d);
+                    total += CleanChoices(d, sp, 0, null, null, null, 0);
+                }
+                if (ox == 0 && oy == 0) centre = total;
+                if (total < best) { best = total; bx = ox; by = oy; }
+            }
+        if (best > centre * 0.99) { bx = 0; by = 0; }      // less than 1% better: keep the picture centred
+    }
+
+    // the weighted squared distance from every pixel to each of the 16 colours: d[pixel * 16 + colour]
+    static void CleanDistances(float[] img, CellSpec sp, float[] d)
+    {
+        int n = img.Length / 3;
+        for (int i = 0; i < n; i++)
+        {
+            float vr = img[i * 3], vg = img[i * 3 + 1], vb = img[i * 3 + 2];
+            for (int c = 0; c < 16; c++) d[i * 16 + c] = Dist(vr, vg, vb, sp.Pr[c], sp.Pg[c], sp.Pb[c]);
+        }
+    }
+
+    // Each block's best colours (Size of them: the shared one, then its own in rising order, all from one group),
+    // judged flat: every pixel takes the nearest of them. The candidates are the colours that are the nearest for at
+    // least one pixel of the block (in each group), plus the nearest to the block's average. keep > 0: the best
+    // `keep` choices into ch / ce, best first. Returns the total error of every block's best choice.
+    // mix > 0 (the dithering amount, 0..1; needs img): each pixel's error is that much the distance to the nearest
+    // mix of two of the colours instead, and every pixel's second-nearest colour is a candidate too.
+    static double CleanChoices(float[] d, CellSpec sp, int keep, int[][][] ch, float[][] ce, float[] img, float mix)
+    {
+        double total = 0;
+        int W = sp.W, m = sp.Size, own = sp.Own, sh = sp.Shared, ncols = sp.Cols;
+        var cand = new List<int>(16);
+        var lc = new List<int[]>(); var le = new List<float>();
+        var sum = new float[16];
+        var combo = new int[3];
+        for (int cell = 0; cell < sp.Cells; cell++)
+        {
+            int cx = (cell % ncols) * sp.CellW, cy = (cell / ncols) * sp.CellH;
+            lc.Clear(); le.Clear();
+            foreach (int[] grp in sp.Groups)
+            {
+                cand.Clear();
+                Array.Clear(sum, 0, 16);
+                for (int y = cy; y < cy + sp.CellH; y++)
+                    for (int x = cx; x < cx + sp.CellW; x++)
+                    {
+                        int p = (y * W + x) * 16, near = 0;
+                        for (int g = 0; g < grp.Length; g++) { sum[g] += d[p + grp[g]]; if (d[p + grp[g]] < d[p + grp[near]]) near = g; }
+                        if (!cand.Contains(grp[near])) cand.Add(grp[near]);
+                        if (mix > 0 && grp.Length > 1)
+                        {
+                            int second = near == 0 ? 1 : 0;
+                            for (int g = 0; g < grp.Length; g++) if (g != near && d[p + grp[g]] < d[p + grp[second]]) second = g;
+                            if (!cand.Contains(grp[second])) cand.Add(grp[second]);
+                        }
+                    }
+                int avg = 0;
+                for (int g = 1; g < grp.Length; g++) if (sum[g] < sum[avg]) avg = g;
+                if (!cand.Contains(grp[avg])) cand.Add(grp[avg]);
+
+                // every set of `own` candidates (in rising order; a colour may repeat when there are few)
+                int nc = cand.Count;
+                for (int i = 0; i < nc; i++)
+                    for (int j = i; j < nc; j++)
+                        for (int l = (own == 3 ? j : nc - 1); l < nc; l++)
+                        {
+                            combo[0] = cand[i]; combo[1] = cand[j]; combo[2] = own == 3 ? cand[l] : -1;
+                            var c = new int[m];
+                            int at = 0;
+                            if (sh >= 0) c[at++] = sh;
+                            var ownCols = new int[own];
+                            for (int q = 0; q < own; q++) ownCols[q] = combo[q];
+                            Array.Sort(ownCols);
+                            for (int q = 0; q < own; q++) c[at++] = ownCols[q];
+                            float err = 0;
+                            for (int y = cy; y < cy + sp.CellH; y++)
+                                for (int x = cx; x < cx + sp.CellW; x++)
+                                {
+                                    int p = (y * W + x) * 16;
+                                    float flat = d[p + c[0]];
+                                    for (int q = 1; q < m; q++) if (d[p + c[q]] < flat) flat = d[p + c[q]];
+                                    if (mix > 0)
+                                    {
+                                        int k = (y * W + x) * 3;
+                                        float seg = float.MaxValue, t;
+                                        for (int q1 = 0; q1 < m; q1++)
+                                            for (int q2 = q1 + 1; q2 < m; q2++)
+                                            {
+                                                int c1 = c[q1], c2 = c[q2];
+                                                float s = SegDist(img[k], img[k + 1], img[k + 2], sp.Pr[c1], sp.Pg[c1], sp.Pb[c1], sp.Pr[c2], sp.Pg[c2], sp.Pb[c2], out t);
+                                                if (s < seg) seg = s;
+                                            }
+                                        if (m < 2) seg = flat;
+                                        flat = (1 - mix) * flat + mix * seg;
+                                    }
+                                    err += flat;
+                                }
+                            lc.Add(c); le.Add(err);
+                        }
+            }
+            // the best first
+            var order = new List<int>(le.Count);
+            for (int i = 0; i < le.Count; i++) order.Add(i);
+            order.Sort(delegate (int i1, int i2) { int cmp = le[i1].CompareTo(le[i2]); return cmp != 0 ? cmp : i1.CompareTo(i2); });
+            total += le[order[0]];
+            if (keep <= 0) continue;
+            int n = Math.Min(keep, order.Count);
+            ch[cell] = new int[n][]; ce[cell] = new float[n];
+            for (int i = 0; i < n; i++) { ch[cell][i] = lc[order[i]]; ce[cell][i] = le[order[i]]; }
+        }
+        return total;
+    }
+
+    // the colour pixel p (index into the screen) shows with choice o of its block: the nearest of the block's colours
+    static int CleanShade(float[] d, int[][][] ch, int cell, int o, int p)
+    {
+        int[] c = ch[cell][o];
+        int best = c[0];
+        for (int q = 1; q < c.Length; q++) if (d[p * 16 + c[q]] < d[p * 16 + best]) best = c[q];
+        return best;
+    }
+
+    // False colour steps along a block's four borders with choice o, against the neighbours' current choice: where
+    // two pixels side by side across the border differ more on screen than in the picture (squared excess)
+    static float CleanSeams(float[] d, float[] sd, float[] pd, CellSpec sp, int[][][] ch, int[] choice, int cell, int o)
+    {
+        int W = sp.W, ncols = sp.Cols, nrows = sp.H / sp.CellH, cw = sp.CellW, chh = sp.CellH;
+        int col = cell % ncols, row = cell / ncols, cx = col * cw, cy = row * chh;
+        float pen = 0;
+        for (int i = 0; i < Math.Max(cw, chh); i++)
+        {
+            if (i < chh)
+            {
+                int y = cy + i;
+                if (col > 0) pen += CleanStep(d, sd, pd, ch, choice, cell, o, y * W + cx, cell - 1, y * W + cx - 1, (y * W + cx - 1) * 2);
+                if (col < ncols - 1) pen += CleanStep(d, sd, pd, ch, choice, cell, o, y * W + cx + cw - 1, cell + 1, y * W + cx + cw, (y * W + cx + cw - 1) * 2);
+            }
+            if (i < cw)
+            {
+                int x = cx + i;
+                if (row > 0) pen += CleanStep(d, sd, pd, ch, choice, cell, o, cy * W + x, cell - ncols, (cy - 1) * W + x, ((cy - 1) * W + x) * 2 + 1);
+                if (row < nrows - 1) pen += CleanStep(d, sd, pd, ch, choice, cell, o, (cy + chh - 1) * W + x, cell + ncols, (cy + chh) * W + x, ((cy + chh - 1) * W + x) * 2 + 1);
+            }
+        }
+        return pen;
+    }
+
+    static float CleanStep(float[] d, float[] sd, float[] pd, int[][][] ch, int[] choice, int cell, int o, int p, int other, int q, int s)
+    {
+        float shown = pd[CleanShade(d, ch, cell, o, p) * 16 + CleanShade(d, ch, other, choice[other], q)];
+        float excess = shown - sd[s];
+        return excess > 0 ? excess * excess : 0;
+    }
+
+    // Clean edges on the ZX Spectrum
+    static byte[] ToZxClean(Bitmap src, bool fill, int[] lockOffset, int amount, int pattern, out int[] shown)
+    {
+        int[] cols; byte[] pick;
+        CleanCells(src, fill, ZxSpec(), lockOffset, amount, pattern, out cols, out pick);
+        var paper = new int[768]; var ink = new int[768];
+        for (int cell = 0; cell < 768; cell++) { paper[cell] = cols[cell * 2]; ink[cell] = cols[cell * 2 + 1]; }
+        var isInk = new bool[256 * 192];
+        for (int i = 0; i < isInk.Length; i++) isInk[i] = pick[i] == 1;
+        return ZxFile(isInk, paper, ink, ZxPalette(), out shown);
+    }
+
+    // Clean edges for the computers with one palette for the whole screen: each pixel's palette index, flat at the
+    // picture's edges and dithered by the amount elsewhere (pattern 0: the ordered pattern, amp = its strength as in
+    // FreeDither; 1: error diffusion over the whole screen)
+    static byte[] FreeClean(float[] img, int w, int h, float[] pr, float[] pg, float[] pb, int n, int amount, int pattern, float amp = 40f)
+    {
+        float a = Math.Max(0, Math.Min(100, amount)) / 100f;
+        if (a <= 0) return FreeDither(img, w, h, pr, pg, pb, n, 0, amp);
+        float[] ap = EdgeAmount(Steps(img, w, h), w, h, a);
+        var idx = new byte[w * h];
+        float[] work = pattern == 1 ? (float[])img.Clone() : img;
+        for (int y = 0; y < h; y++)
+        {
+            bool rev = pattern == 1 && (y & 1) == 1;
+            for (int m = 0; m < w; m++)
+            {
+                int x = rev ? w - 1 - m : m, i = y * w + x, k = i * 3;
+                float vr = work[k], vg = work[k + 1], vb = work[k + 2];
+                if (pattern != 1 && ap[i] > 0)
+                {
+                    int c0 = Nearest(vr, vg, vb, pr, pg, pb, n);
+                    if (Dist(vr, vg, vb, pr[c0], pg[c0], pb[c0]) > 12)
+                    {
+                        float off = ((Bayer8[(y & 7) * 8 + (x & 7)] + 0.5f) / 64f - 0.5f) * amp * ap[i];
+                        vr += off; vg += off; vb += off;
+                    }
+                }
+                int c = Nearest(vr, vg, vb, pr, pg, pb, n);
+                if (pattern == 1 && ap[i] > 0) Diffuse(work, w, h, x, y, rev ? -1 : 1, (vr - pr[c]) * ap[i], (vg - pg[c]) * ap[i], (vb - pb[c]) * ap[i]);
+                idx[i] = (byte)c;
+            }
+        }
+        return idx;
     }
 
     static void Spread(float[] work, int w, int h, int x, int y, float er, float eg, float eb, float f)
@@ -367,7 +844,8 @@ static class RetroConvert
     }
 
     // The .koa bytes for a picture, and the picture as that file shows it (160 x 200, 0xFFRRGGBB).
-    public static byte[] ToKoala(Bitmap src, bool fill, int dither, out int[] shown, int fixedBg = -1)
+    // lockOffset, amount, pattern: Clean edges (dither 3) only, as for the ZX Spectrum
+    public static byte[] ToKoala(Bitmap src, bool fill, int dither, out int[] shown, int fixedBg = -1, int[] lockOffset = null, int amount = 25, int pattern = 0)
     {
         const int W = 160, H = 200;
         int[] pal = C64Palette();
@@ -377,6 +855,12 @@ static class RetroConvert
 
         // the background: the colour nearest to the most pixels (an animation keeps one for every frame)
         int bgc = fixedBg >= 0 && fixedBg < 16 ? fixedBg : KoalaBackground(img, pr, pg, pb);
+        if (dither == 3)
+        {
+            int[] cc; byte[] pk;
+            CleanCells(src, fill, KoalaSpec(bgc), lockOffset, amount, pattern, out cc, out pk);
+            return KoalaFile(cc, pk, bgc, pal, out shown);
+        }
         var others = new int[15];
         for (int c = 0, n = 0; c < 16; c++) if (c != bgc) others[n++] = c;
 
@@ -468,6 +952,14 @@ static class RetroConvert
             }
         }
 
+        return KoalaFile(cols, idx, bgc, pal, out shown);
+    }
+
+    // the .koa bytes for these cell colours (background, then the three of each cell: screen memory high and low half,
+    // colour memory) and pixels (0..3, an index into the cell's colours), and the picture the file shows
+    static byte[] KoalaFile(int[] cols, byte[] idx, int bgc, int[] pal, out int[] shown)
+    {
+        const int W = 160, H = 200;
         // the file: load address, bitmap (8 bytes per cell, 4 pixels per byte), screen memory, colour memory, background
         var d2 = new byte[10003];
         d2[0] = 0x00; d2[1] = 0x60;
@@ -662,7 +1154,7 @@ static class RetroConvert
     }
 
     // the palette's colours as RECOIL shows them, and the picture's pixels as indexes into it
-    static byte[] PalettePicture(Bitmap src, bool fill, int dither, int w, int h, int n, int[][] levels, out List<int[]> lv, out int[] shownPal)
+    static byte[] PalettePicture(Bitmap src, bool fill, int dither, int amount, int pattern, int w, int h, int n, int[][] levels, out List<int[]> lv, out int[] shownPal)
     {
         float[] img = Fit(src, w, h, fill, 1);
         lv = FreePalette(img, n, levels);
@@ -674,22 +1166,31 @@ static class RetroConvert
             pr[c] = levels[0][lv[c][0]]; pg[c] = levels[1][lv[c][1]]; pb[c] = levels[2][lv[c][2]];
             shownPal[c] = Argb(pr[c], pg[c], pb[c]);
         }
-        return FreeDither(img, w, h, pr, pg, pb, k, dither);
+        return dither == 3 ? FreeClean(img, w, h, pr, pg, pb, k, amount, pattern) : FreeDither(img, w, h, pr, pg, pb, k, dither);
     }
 
     // ---------------------------------------------------------------- Commodore 64 (Doodle hires)
 
     // The .dd bytes for a picture, and the picture as that file shows it (320 x 200, 0xFFRRGGBB): two of the 16
     // colours for each 8 x 8 cell, held in screen memory (low half: pixels off, high half: pixels on).
-    public static byte[] ToDoodle(Bitmap src, bool fill, int dither, out int[] shown)
+    // lockOffset, amount, pattern: Clean edges (dither 3) only, as for the ZX Spectrum
+    public static byte[] ToDoodle(Bitmap src, bool fill, int dither, out int[] shown, int[] lockOffset = null, int amount = 25, int pattern = 0)
     {
         const int W = 320, H = 200;
         int[] pal = C64Palette();
         var pr = new float[16]; var pg = new float[16]; var pb = new float[16];
         for (int c = 0; c < 16; c++) { pr[c] = (pal[c] >> 16) & 255; pg[c] = (pal[c] >> 8) & 255; pb[c] = pal[c] & 255; }
-        float[] img = Fit(src, W, H, fill, 1);
         var off = new int[1000]; var on = new int[1000];
-        bool[] set = TwoColourCells(img, W, H, pr, pg, pb, 16, dither, off, on);
+        bool[] set;
+        if (dither == 3)
+        {
+            int[] cc; byte[] pk;
+            CleanCells(src, fill, DoodleSpec(), lockOffset, amount, pattern, out cc, out pk);
+            for (int cell = 0; cell < 1000; cell++) { off[cell] = cc[cell * 2]; on[cell] = cc[cell * 2 + 1]; }
+            set = new bool[W * H];
+            for (int i = 0; i < set.Length; i++) set[i] = pk[i] == 1;
+        }
+        else set = TwoColourCells(Fit(src, W, H, fill, 1), W, H, pr, pg, pb, 16, dither, off, on);
         var d = new byte[9218];
         d[0] = 0x00; d[1] = 0x5C;                                              // load address $5C00
         for (int cell = 0; cell < 1000; cell++) d[2 + cell] = (byte)((on[cell] << 4) | off[cell]);
@@ -837,7 +1338,8 @@ static class RetroConvert
     // The CPC .scr bytes for a picture (mode 0: 160 x 200 wide pixels, 16 colours; mode 1: 320 x 200, 4 colours;
     // each chosen from the 27), and the picture as that file shows it (0xFFRRGGBB).
     // fixedFw: an animation's colours, kept for every frame (firmware colour numbers), or null to choose them here
-    public static byte[] ToCpc(Bitmap src, bool fill, int dither, int mode, out int[] shown, int[] fixedFw = null)
+    // amount, pattern: Clean edges (dither 3): dithering by this amount that keeps the picture's edges flat
+    public static byte[] ToCpc(Bitmap src, bool fill, int dither, int mode, out int[] shown, int[] fixedFw = null, int amount = 25, int pattern = 0)
     {
         int W = mode == 0 ? 160 : 320, H = 200, n = mode == 0 ? 16 : 4;
         int[][] levels = CpcLevels();
@@ -853,7 +1355,7 @@ static class RetroConvert
             shownPal[c] = Argb(pr[c], pg[c], pb[c]);
         }
         float amp = Math.Max(40f, (levels[1][2] - levels[1][0]) / 2f);       // the pattern spans one level step
-        byte[] idx = FreeDither(img, W, H, pr, pg, pb, k2, dither, amp);
+        byte[] idx = dither == 3 ? FreeClean(img, W, H, pr, pg, pb, k2, amount, pattern, amp) : FreeDither(img, W, H, pr, pg, pb, k2, dither, amp);
         shown = new int[W * H];
         for (int i = 0; i < shown.Length; i++) shown[i] = shownPal[idx[i]];
         return CpcScreen(mode, fw.ToArray(), idx, W);
@@ -920,11 +1422,11 @@ static class RetroConvert
     // ---------------------------------------------------------------- Atari ST (Degas .pi1)
 
     // The .pi1 bytes for a picture, and the picture as that file shows it (320 x 200, 0xFFRRGGBB).
-    public static byte[] ToDegas(Bitmap src, bool fill, int dither, out int[] shown)
+    public static byte[] ToDegas(Bitmap src, bool fill, int dither, out int[] shown, int amount = 25, int pattern = 0)
     {
         List<int[]> lv;
         int[] shownPal;
-        byte[] idx = PalettePicture(src, fill, dither, 320, 200, 16, StLevels(), out lv, out shownPal);
+        byte[] idx = PalettePicture(src, fill, dither, amount, pattern, 320, 200, 16, StLevels(), out lv, out shownPal);
         var d = new byte[32034];                                               // resolution word 0: low resolution
         for (int c = 0; c < lv.Count; c++)
         {
@@ -947,11 +1449,11 @@ static class RetroConvert
     // ---------------------------------------------------------------- Amiga (IFF ILBM)
 
     // The .iff bytes for a picture, and the picture as that file shows it (320 x 256, 0xFFRRGGBB).
-    public static byte[] ToIff(Bitmap src, bool fill, int dither, out int[] shown)
+    public static byte[] ToIff(Bitmap src, bool fill, int dither, out int[] shown, int amount = 25, int pattern = 0)
     {
         List<int[]> lv;
         int[] shownPal;
-        byte[] idx = PalettePicture(src, fill, dither, 320, 256, 32, AmigaLevels(), out lv, out shownPal);
+        byte[] idx = PalettePicture(src, fill, dither, amount, pattern, 320, 256, 32, AmigaLevels(), out lv, out shownPal);
         var lr = new int[32]; var lg = new int[32]; var lb = new int[32];
         for (int c = 0; c < lv.Count; c++) { lr[c] = lv[c][0]; lg[c] = lv[c][1]; lb[c] = lv[c][2]; }
         shown = new int[320 * 256];
@@ -1049,14 +1551,24 @@ static class RetroConvert
     }
 
     // The .sc2 bytes for a picture, and the picture as that file shows it (256 x 192, 0xFFRRGGBB).
-    public static byte[] ToSc2(Bitmap src, bool fill, int dither, out int[] shown)
+    // lockOffset, amount, pattern: Clean edges (dither 3) only, as for the ZX Spectrum
+    public static byte[] ToSc2(Bitmap src, bool fill, int dither, out int[] shown, int[] lockOffset = null, int amount = 25, int pattern = 0)
     {
         const int W = 256, H = 192;
         int[] pal = MsxPalette();
         var pr = new float[16]; var pg = new float[16]; var pb = new float[16];
         for (int c = 0; c < 16; c++) { pr[c] = (pal[c] >> 16) & 255; pg[c] = (pal[c] >> 8) & 255; pb[c] = pal[c] & 255; }
-        float[] img = Fit(src, W, H, fill, 1);
         var back = new int[H * 32]; var fore = new int[H * 32];               // per 8 x 1 strip
+        var on = new bool[W * H];
+        if (dither == 3)
+        {
+            int[] cc; byte[] pk;
+            CleanCells(src, fill, Sc2Spec(), lockOffset, amount, pattern, out cc, out pk);
+            for (int st = 0; st < H * 32; st++) { back[st] = cc[st * 2]; fore[st] = cc[st * 2 + 1]; }
+            for (int i = 0; i < on.Length; i++) on[i] = pk[i] == 1;
+            return Sc2File(back, fore, on, pal, out shown);
+        }
+        float[] img = Fit(src, W, H, fill, 1);
         float tt;
         for (int y = 0; y < H; y++)
             for (int sx = 0; sx < 32; sx++)
@@ -1074,7 +1586,6 @@ static class RetroConvert
                         if (e < best - 1e-6) { best = e; back[y * 32 + sx] = a; fore[y * 32 + sx] = b; }
                     }
             }
-        var on = new bool[W * H];
         float[] work = dither == 2 ? (float[])img.Clone() : img;
         for (int y = 0; y < H; y++)
         {
@@ -1101,6 +1612,13 @@ static class RetroConvert
                 on[y * W + x] = o;
             }
         }
+        return Sc2File(back, fore, on, pal, out shown);
+    }
+
+    // the .sc2 bytes for these strip colours (background, foreground) and pixels, and the picture the file shows
+    static byte[] Sc2File(int[] back, int[] fore, bool[] on, int[] pal, out int[] shown)
+    {
+        const int W = 256, H = 192;
         byte[] v = Sc2Vram();
         shown = new int[W * H];
         for (int y = 0; y < H; y++)
@@ -1139,13 +1657,14 @@ static class RetroConvert
     }
 
     // The .sc8 bytes for a picture, and the picture as that file shows it (256 x 212, 0xFFRRGGBB).
-    public static byte[] ToSc8(Bitmap src, bool fill, int dither, out int[] shown)
+    public static byte[] ToSc8(Bitmap src, bool fill, int dither, out int[] shown, int amount = 25, int pattern = 0)
     {
         int[] pal = Sc8Palette();
         var pr = new float[256]; var pg = new float[256]; var pb = new float[256];
         for (int c = 0; c < 256; c++) { pr[c] = (pal[c] >> 16) & 255; pg[c] = (pal[c] >> 8) & 255; pb[c] = pal[c] & 255; }
         float[] img = Fit(src, 256, 212, fill, 1);
-        byte[] idx = FreeDither(img, 256, 212, pr, pg, pb, 256, dither);     // the byte is the colour
+        byte[] idx = dither == 3 ? FreeClean(img, 256, 212, pr, pg, pb, 256, amount, pattern)
+                                 : FreeDither(img, 256, 212, pr, pg, pb, 256, dither);     // the byte is the colour
         shown = new int[256 * 212];
         for (int i = 0; i < idx.Length; i++) shown[i] = pal[idx[i]];
         return Bsave(idx);
@@ -1176,7 +1695,7 @@ static class RetroConvert
         "320 x 200, 4 of 27 colours",
         "256 x 192, 15 colours, 2 per 8 x 1 strip"
     };
-    public static readonly string[] DitherShort = { "no dithering", "ordered dithering", "error diffusion" };
+    public static readonly string[] DitherShort = { "no dithering", "ordered dithering", "error diffusion", "clean edges" };
 
     // A picture converted for one of the preview computers, exactly as Convert would make the file, but only in
     // memory: the file's bytes (handed to RECOIL by the viewer, never written), the extension RECOIL needs to read them,
@@ -1189,7 +1708,19 @@ static class RetroConvert
     {
         int f, w, h, pxw;
         int[] shown;
-        byte[] data = PreviewCore(src, machine, fill, dither, cropX, cropY, lockPal, out f, out shown, out w, out h, out pxw, out linesPerPixel);
+        byte[] data = PreviewCore(src, machine, fill, dither, 25, 0, null, cropX, cropY, lockPal, out f, out shown, out w, out h, out pxw, out linesPerPixel);
+        if (f == 3 || f == 4) CpcHeader(data, "PREVIEW");
+        ext = FormatExts[f];
+        screenH = h;
+        return data;
+    }
+
+    // the same with the retro preview's choices (including the Clean edges dithering amount)
+    public static byte[] Preview(Bitmap src, RetroSim s, int[] lockPal, out string ext, out double linesPerPixel, out int screenH)
+    {
+        int f, w, h, pxw;
+        int[] shown;
+        byte[] data = PreviewCore(src, s.Machine, s.Fill, s.Dither, s.Amount, s.Pattern, s.Adjust, s.CropX, s.CropY, lockPal, out f, out shown, out w, out h, out pxw, out linesPerPixel);
         if (f == 3 || f == 4) CpcHeader(data, "PREVIEW");
         ext = FormatExts[f];
         screenH = h;
@@ -1197,11 +1728,12 @@ static class RetroConvert
     }
 
     // the conversion behind Preview and SavePreview (CPC screens still need their header)
-    static byte[] PreviewCore(Bitmap src, int machine, bool fill, int dither, double cropX, double cropY, int[] lockPal,
+    static byte[] PreviewCore(Bitmap src, int machine, bool fill, int dither, int amount, int pattern, PictureAdjust adjust, double cropX, double cropY, int[] lockPal,
                               out int f, out int[] shown, out int w, out int h, out int pxw, out double linesPerPixel)
     {
         f = PreviewFormats[Math.Max(0, Math.Min(PreviewFormats.Length - 1, machine))];
-        var o = new ConvertOptions { Format = f, Fill = fill, Dither = Math.Max(0, Math.Min(2, dither)), Lock = lockPal };
+        var o = new ConvertOptions { Format = f, Fill = fill, Dither = Math.Max(0, Math.Min(DitherNames.Length - 1, dither)), Lock = lockPal,
+                                     Amount = Math.Max(0, Math.Min(100, amount)), Pattern = pattern == 1 ? 1 : 0, Adjust = adjust };
         byte[] data;
         if (fill)
         {
@@ -1229,28 +1761,104 @@ static class RetroConvert
     // animation, upright, as the viewer shows them. Any thread.
     public static int[] PreviewLock(IList<Bitmap> sample, int machine, bool fill, double cropX, double cropY)
     {
+        return PreviewLock(sample, machine, fill, cropX, cropY, 0);
+    }
+
+    // the same with the retro preview's choices (its adjustment of the picture too)
+    public static int[] PreviewLock(IList<Bitmap> sample, RetroSim s)
+    {
+        PictureAdjust before = fitAdjust;
+        fitAdjust = Active(s.Adjust);
+        try { return PreviewLock(sample, s.Machine, s.Fill, s.CropX, s.CropY, s.Dither); }
+        finally { fitAdjust = before; }
+    }
+
+    // Auto levels: the brightness and contrast that stretch the picture's darkest and lightest parts (leaving out the
+    // darkest and lightest half percent) to the full range. Saturation and hue are left as they are.
+    public static PictureAdjust AutoLevels(Bitmap src, PictureAdjust now)
+    {
+        PictureAdjust before = fitAdjust;
+        fitAdjust = null;
+        try
+        {
+            double sc = Math.Min(1.0, 200.0 / Math.Max(src.Width, src.Height));
+            int w = Math.Max(1, (int)Math.Round(src.Width * sc)), h = Math.Max(1, (int)Math.Round(src.Height * sc));
+            float[] img = Fit(src, w, h, false, 1);                // the picture's own shape: no borders
+            var hist = new int[256];
+            int n = w * h;
+            for (int i = 0; i < n; i++)
+            {
+                int y = (int)(img[i * 3] * 0.299f + img[i * 3 + 1] * 0.587f + img[i * 3 + 2] * 0.114f);
+                hist[Math.Max(0, Math.Min(255, y))]++;
+            }
+            int cut = n / 200, lo = 0, hi = 255, acc = 0;
+            for (; lo < 255; lo++) { acc += hist[lo]; if (acc > cut) break; }
+            acc = 0;
+            for (; hi > 0; hi--) { acc += hist[hi]; if (acc > cut) break; }
+            PictureAdjust a = now == null ? new PictureAdjust() : now.Copy();
+            if (hi - lo < 8) { a.Brightness = 0; a.Contrast = 0; return a; }    // (almost) one colour: nothing to stretch
+            float cf = 255f / (hi - lo);
+            int contrast = Math.Max(-100, Math.Min(100, PictureAdjust.ContrastFrom(cf)));
+            cf = PictureAdjust.ContrastFactor(contrast);
+            // the middle of the range to middle grey: (mid / 255 - 0.5) * cf + 0.5 + brightness * 0.005 = 0.5
+            double mid = (lo + hi) / 2.0 / 255;
+            a.Contrast = contrast;
+            a.Brightness = Math.Max(-100, Math.Min(100, (int)Math.Round(-(mid - 0.5) * cf / 0.005)));
+            return a;
+        }
+        finally { fitAdjust = before; }
+    }
+
+    // dither 3 (Clean edges) on a computer with colours per block (ZX Spectrum, C64, MSX): also the position on the
+    // colour blocks, the same for every frame: { x, y }, or for the C64 multicolour { background, x, y }
+    public static int[] PreviewLock(IList<Bitmap> sample, int machine, bool fill, double cropX, double cropY, int dither)
+    {
         int f = PreviewFormats[Math.Max(0, Math.Min(PreviewFormats.Length - 1, machine))];
-        if (f != 1 && f != 3 && f != 4 || sample == null || sample.Count == 0) return null;
-        int w, h, pxw;
-        ScreenOf(f, out w, out h, out pxw);
-        var img = new float[sample.Count * w * h * 3];
-        for (int i = 0; i < sample.Count; i++)
+        if (sample == null || sample.Count == 0) return null;
+        int bg = -1;
+        if (f == 1 || f == 3 || f == 4)
         {
-            float[] one = PreviewPixels(sample[i], machine, fill, cropX, cropY, w, h, pxw);
-            Array.Copy(one, 0, img, i * one.Length, one.Length);
-        }
-        if (f == 1)
-        {
+            int w, h, pxw;
+            ScreenOf(f, out w, out h, out pxw);
+            var img = new float[sample.Count * w * h * 3];
+            for (int i = 0; i < sample.Count; i++)
+            {
+                float[] one = PreviewPixels(sample[i], machine, fill, cropX, cropY, w, h, pxw);
+                Array.Copy(one, 0, img, i * one.Length, one.Length);
+            }
+            if (f != 1)
+            {
+                int[][] levels = CpcLevels();
+                return CpcChoose(img, f == 3 ? 16 : 4, levels, CpcColours(levels)).ToArray();
+            }
             int[] pal = C64Palette();
-            var pr = new float[16]; var pg = new float[16]; var pb = new float[16];
-            for (int c = 0; c < 16; c++) { pr[c] = (pal[c] >> 16) & 255; pg[c] = (pal[c] >> 8) & 255; pb[c] = pal[c] & 255; }
-            return new[] { KoalaBackground(img, pr, pg, pb) };
+            bg = KoalaBackground(img, Floats(pal, 0), Floats(pal, 1), Floats(pal, 2));
+            if (dither != 3) return new[] { bg };
         }
-        int[][] levels = CpcLevels();
-        return CpcChoose(img, f == 3 ? 16 : 4, levels, CpcColours(levels)).ToArray();
+        if (dither != 3 || (f != 0 && f != 1 && f != 2 && f != 7)) return null;
+        CellSpec sp = f == 0 ? ZxSpec() : f == 1 ? KoalaSpec(bg) : f == 2 ? DoodleSpec() : Sc2Spec();
+        var srcs = new List<Bitmap>();
+        try
+        {
+            foreach (Bitmap b in sample) srcs.Add(fill ? PreviewCrop(b, machine, cropX, cropY) : b);
+            int ox, oy;
+            CleanBestOffset(srcs, fill, sp, out ox, out oy);
+            return f == 1 ? new[] { bg, ox, oy } : new[] { ox, oy };
+        }
+        finally { if (fill) foreach (Bitmap b in srcs) b.Dispose(); }
     }
 
     // the picture's pixels as the converter sees them (cropped and fitted exactly as PreviewCore and Render do it)
+    // Fill the screen: the part of the picture the screen shows, exactly the screen's shape (a new bitmap)
+    static Bitmap PreviewCrop(Bitmap src, int machine, double cropX, double cropY)
+    {
+        RectangleF c = CropRect(machine, src.Width, src.Height, cropX, cropY);
+        var r = Rectangle.Round(c);
+        r.Intersect(new Rectangle(0, 0, src.Width, src.Height));
+        if (r.Width < 1 || r.Height < 1) r = new Rectangle(0, 0, src.Width, src.Height);
+        return src.Clone(r, src.PixelFormat);
+    }
+
     static float[] PreviewPixels(Bitmap src, int machine, bool fill, double cropX, double cropY, int w, int h, int pxw)
     {
         if (!fill) return Fit(src, w, h, false, pxw);
@@ -1298,7 +1906,7 @@ static class RetroConvert
             if (anim != null) src = anim.Frame(Math.Max(0, Math.Min(anim.Count - 1, frame)));
         if (src == null) src = Exporter.Decode(path, 0);
         using (src)
-            data = PreviewCore(src, s.Machine, s.Fill, s.Dither, s.CropX, s.CropY, lockPal, out f, out shown, out w, out h, out pxw, out lines);
+            data = PreviewCore(src, s.Machine, s.Fill, s.Dither, s.Amount, s.Pattern, s.Adjust, s.CropX, s.CropY, lockPal, out f, out shown, out w, out h, out pxw, out lines);
         bool cpc = f == 3 || f == 4;
         if (cpc && File.Exists(Path.ChangeExtension(dest, ".pal")))
             throw new IOException("there is a .pal file with the same name beside it, and RECOIL would show the screen in that file's colours. Choose another name.");
@@ -1360,18 +1968,32 @@ static class RetroConvert
     // pxw = how many times as wide as tall the format's pixels are shown (2 for C64 multicolour and CPC mode 0)
     static byte[] Render(Bitmap src, ConvertOptions o, out int[] shown, out int w, out int h, out int pxw)
     {
+        PictureAdjust before = fitAdjust;
+        fitAdjust = Active(o.Adjust);
+        try { return RenderCore(src, o, out shown, out w, out h, out pxw); }
+        finally { fitAdjust = before; }
+    }
+
+    static byte[] RenderCore(Bitmap src, ConvertOptions o, out int[] shown, out int w, out int h, out int pxw)
+    {
         pxw = 1;
         switch (o.Format)
         {
-            case 1: w = 160; h = 200; pxw = 2; return ToKoala(src, o.Fill, o.Dither, out shown, o.Lock != null && o.Lock.Length == 1 ? o.Lock[0] : -1);
-            case 2: w = 320; h = 200; return ToDoodle(src, o.Fill, o.Dither, out shown);
-            case 3: w = 160; h = 200; pxw = 2; return ToCpc(src, o.Fill, o.Dither, 0, out shown, o.Lock);
-            case 4: w = 320; h = 200; return ToCpc(src, o.Fill, o.Dither, 1, out shown, o.Lock);
-            case 5: w = 320; h = 200; return ToDegas(src, o.Fill, o.Dither, out shown);
-            case 6: w = 320; h = 256; return ToIff(src, o.Fill, o.Dither, out shown);
-            case 7: w = 256; h = 192; return ToSc2(src, o.Fill, o.Dither, out shown);
-            case 8: w = 256; h = 212; return ToSc8(src, o.Fill, o.Dither, out shown);
-            default: w = 256; h = 192; return ToZx(src, o.Fill, o.Dither, out shown);
+            case 1:
+                {
+                    w = 160; h = 200; pxw = 2;
+                    int bg = o.Lock != null && (o.Lock.Length == 1 || o.Lock.Length == 3) ? o.Lock[0] : -1;
+                    int[] at = o.Lock != null && o.Lock.Length == 3 ? new[] { o.Lock[1], o.Lock[2] } : null;
+                    return ToKoala(src, o.Fill, o.Dither, out shown, bg, at, o.Amount, o.Pattern);
+                }
+            case 2: w = 320; h = 200; return ToDoodle(src, o.Fill, o.Dither, out shown, o.Lock, o.Amount, o.Pattern);
+            case 3: w = 160; h = 200; pxw = 2; return ToCpc(src, o.Fill, o.Dither, 0, out shown, o.Lock, o.Amount, o.Pattern);
+            case 4: w = 320; h = 200; return ToCpc(src, o.Fill, o.Dither, 1, out shown, o.Lock, o.Amount, o.Pattern);
+            case 5: w = 320; h = 200; return ToDegas(src, o.Fill, o.Dither, out shown, o.Amount, o.Pattern);
+            case 6: w = 320; h = 256; return ToIff(src, o.Fill, o.Dither, out shown, o.Amount, o.Pattern);
+            case 7: w = 256; h = 192; return ToSc2(src, o.Fill, o.Dither, out shown, o.Lock, o.Amount, o.Pattern);
+            case 8: w = 256; h = 212; return ToSc8(src, o.Fill, o.Dither, out shown, o.Amount, o.Pattern);
+            default: w = 256; h = 192; return ToZx(src, o.Fill, o.Dither, out shown, o.Lock, o.Amount, o.Pattern);
         }
     }
 
@@ -1419,7 +2041,7 @@ static class RetroConvert
     public static ConvertOptions Ask(IWin32Window owner, List<string> paths, string folder, Action<Form> darkTitle)
     {
         Color panelBg = Color.FromArgb(38, 38, 38), text = Color.Gainsboro, boxBg = Color.FromArgb(52, 52, 52);
-        var o = new ConvertOptions { Format = lastFormat, Fill = lastFill, Dither = lastDither, DestDir = folder };
+        var o = new ConvertOptions { Format = lastFormat, Fill = lastFill, Dither = lastDither, Amount = lastAmount, Pattern = lastPattern, Adjust = lastAdjust.Copy(), DestDir = folder };
         Bitmap source = null, preview = null;
         string sourceErr = null;
         try { source = Exporter.Decode(paths[0], 0); }
@@ -1481,7 +2103,7 @@ static class RetroConvert
                 fitGroup.Controls.Add(rFit); fitGroup.Controls.Add(rFill);
                 y += Util.S(56);
                 heading("Dithering (how in-between colours are shown)");
-                var ditherGroup = new Panel { Left = 0, Top = y, Width = colW + pad, Height = Util.S(74), BackColor = panelBg };
+                var ditherGroup = new Panel { Left = 0, Top = y, Width = colW + pad, Height = Util.S(24 * DitherNames.Length + 2), BackColor = panelBg };
                 f.Controls.Add(ditherGroup);
                 var rDither = new RadioButton[DitherNames.Length];
                 for (int i = 0; i < DitherNames.Length; i++)
@@ -1490,7 +2112,31 @@ static class RetroConvert
                                                    Checked = i == o.Dither, FlatStyle = FlatStyle.Flat, ForeColor = text };
                     ditherGroup.Controls.Add(rDither[i]);
                 }
-                y += Util.S(80);
+                y += Util.S(24 * DitherNames.Length + 2);
+
+                // Clean edges: how much dithering is mixed in, and which kind
+                var amountLabel = new Label { Left = pad + Util.S(26), Top = y, Width = Util.S(70), Height = Util.S(22), Text = "Amount:", TextAlign = ContentAlignment.MiddleLeft, ForeColor = text };
+                var amount = new DarkSlider { Left = amountLabel.Right, Top = y + Util.S(3), Width = Util.S(180), Height = Util.S(18), Minimum = 0, Maximum = 100, Value = o.Amount };
+                var amountPct = new Label { Left = amount.Right + Util.S(6), Top = y, Width = Util.S(60), Height = Util.S(22), TextAlign = ContentAlignment.MiddleLeft, ForeColor = text };
+                f.Controls.Add(amountLabel); f.Controls.Add(amount); f.Controls.Add(amountPct);
+                y += Util.S(24);
+                var patternGroup = new Panel { Left = 0, Top = y, Width = colW + pad, Height = Util.S(24), BackColor = panelBg };
+                f.Controls.Add(patternGroup);
+                var rOrdered = new RadioButton { Left = pad + Util.S(26), Top = 0, Width = Util.S(140), Height = Util.S(22), Text = "Ordered pattern", Checked = o.Pattern != 1, FlatStyle = FlatStyle.Flat, ForeColor = text };
+                var rDiffuse = new RadioButton { Left = rOrdered.Right + Util.S(6), Top = 0, Width = Util.S(150), Height = Util.S(22), Text = "Error diffusion", Checked = o.Pattern == 1, FlatStyle = FlatStyle.Flat, ForeColor = text };
+                patternGroup.Controls.Add(rOrdered); patternGroup.Controls.Add(rDiffuse);
+                y += Util.S(30);
+                var amountTip = new ToolTip();
+                string amountHelp = "Clean edges: how much dithering is mixed in for smooth shading. 0% = flat colours only; the picture's edges stay flat at every amount.";
+                amountTip.SetToolTip(amount, amountHelp); amountTip.SetToolTip(amountLabel, amountHelp);
+                Action syncAmount = delegate
+                {
+                    bool on = rDither[3].Checked;
+                    amount.Enabled = on; amountLabel.Enabled = on; amountPct.Enabled = on; rOrdered.Enabled = on; rDiffuse.Enabled = on;
+                    amountLabel.ForeColor = amountPct.ForeColor = on ? text : Color.FromArgb(110, 110, 110);
+                    amountPct.Text = amount.Value + "%";
+                };
+                syncAmount();
 
                 heading("Save the new files in");
                 var dirBox = new TextBox { Left = pad, Top = y, Width = colW - Util.S(86), Text = folder ?? "", BorderStyle = BorderStyle.FixedSingle, BackColor = boxBg, ForeColor = Color.White };
@@ -1517,10 +2163,22 @@ static class RetroConvert
                 var note = new Label { Left = px0, Top = pad + ph + Util.S(6), Width = pw, Height = Util.S(38), ForeColor = Color.Silver };
                 f.Controls.Add(box); f.Controls.Add(note);
 
+                // under the preview: the picture's brightness, contrast, saturation and hue before converting (the
+                // originals never change); then Convert and Cancel below it
+                var adjustHead = new Label { Left = px0, Top = note.Bottom + Util.S(4), Width = pw, Height = Util.S(20), Text = "Adjust the picture first (the originals are not changed)", ForeColor = Color.Silver };
+                var adjust = new AdjustPanel(panelBg, text, f.Font, Math.Min(pw, Util.S(360))) { Left = px0, Top = adjustHead.Bottom + Util.S(2) };
+                adjust.Value = o.Adjust;
+                f.Controls.Add(adjustHead); f.Controls.Add(adjust);
+                int needH = adjust.Bottom + Util.S(10) + Util.S(30) + pad;
+                if (needH > f.ClientSize.Height) f.ClientSize = new Size(f.ClientSize.Width, needH);
+
                 Action refresh = delegate
                 {
                     o.Fill = rFill.Checked;
                     for (int i = 0; i < rDither.Length; i++) if (rDither[i].Checked) o.Dither = i;
+                    o.Amount = amount.Value; o.Pattern = rDiffuse.Checked ? 1 : 0;
+                    o.Adjust = adjust.Value;
+                    syncAmount();
                     if (source == null) { note.Text = "No preview: " + Path.GetFileName(paths[0]) + " could not be opened (" + sourceErr + ")."; return; }
                     try
                     {
@@ -1543,6 +2201,15 @@ static class RetroConvert
                     fmtPanel[i].CheckedChanged += delegate { if (fmtPanel[fi].Checked) { o.Format = fi; refresh(); } };
                 }
                 foreach (RadioButton r in rDither) r.CheckedChanged += changed;
+                rOrdered.CheckedChanged += changed; rDiffuse.CheckedChanged += changed;
+                // the slider: the preview follows once it rests for a moment (each conversion takes a little while)
+                var amountTimer = new Timer { Interval = 250 };
+                amountTimer.Tick += delegate { amountTimer.Stop(); refresh(); };
+                amount.ValueChanged += delegate { amountPct.Text = amount.Value + "%"; amountTimer.Stop(); amountTimer.Start(); };
+                f.FormClosed += delegate { amountTimer.Dispose(); amountTip.Dispose(); };
+                adjust.Changed += delegate { refresh(); };
+                // Auto: from the first picture (the one previewed); the same values are used for every picture
+                adjust.AutoClicked += delegate { if (source != null) adjust.SetAndApply(AutoLevels(source, adjust.Value)); };
 
                 var ok = new Button { Text = "Convert", DialogResult = DialogResult.OK, Width = Util.S(96), Height = Util.S(30), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(60, 130, 230), ForeColor = Color.White };
                 var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Width = Util.S(96), Height = Util.S(30), FlatStyle = FlatStyle.Flat, BackColor = boxBg, ForeColor = text };
@@ -1568,7 +2235,10 @@ static class RetroConvert
                 o.Fill = rFill.Checked;
                 for (int i = 0; i < rDither.Length; i++) if (rDither[i].Checked) o.Dither = i;
                 for (int i = 0; i < fmtPanel.Count; i++) if (fmtPanel[i].Checked) o.Format = i;
-                lastFill = o.Fill; lastDither = o.Dither; lastFormat = o.Format;
+                o.Amount = amount.Value; o.Pattern = rDiffuse.Checked ? 1 : 0;
+                o.Adjust = adjust.Value;
+                lastAdjust = o.Adjust.Copy();
+                lastFill = o.Fill; lastDither = o.Dither; lastFormat = o.Format; lastAmount = o.Amount; lastPattern = o.Pattern;
                 return o;
             }
         }

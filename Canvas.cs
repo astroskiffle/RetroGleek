@@ -1414,7 +1414,7 @@ sealed class Canvas : Control
                 {
                     int n = Math.Min(SimSampleFrames, anim.Count);
                     for (int i = 0; i < n; i++) sample.Add(anim.Frame((int)((long)i * anim.Count / n)));
-                    lockPal = RetroConvert.PreviewLock(sample, s.Machine, s.Fill, s.CropX, s.CropY);
+                    lockPal = RetroConvert.PreviewLock(sample, s);
                 }
                 finally { foreach (Bitmap b in sample) b.Dispose(); }
             }
@@ -1455,7 +1455,7 @@ sealed class Canvas : Control
     static Bitmap ConvertSimFrame(Bitmap src, RetroSim s, int[] lockPal, out double lines, out int screenH, out int bytes, out RetroGeom geom)
     {
         string ext;
-        byte[] data = RetroConvert.Preview(src, s.Machine, s.Fill, s.Dither, s.CropX, s.CropY, lockPal, out ext, out lines, out screenH);
+        byte[] data = RetroConvert.Preview(src, s, lockPal, out ext, out lines, out screenH);
         string platform;
         Bitmap b = Retro.LoadMemory("preview" + ext, data, out platform, out geom);
         b.Tag = platform;

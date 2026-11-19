@@ -84,13 +84,74 @@ static class SelfTest
 
             // ---- converting into retro formats: every format, every dithering, both framings
             for (int f = 0; f < RetroConvert.FormatNames.Length; f++)
-                for (int d = 0; d < 3; d++)
+                for (int d = 0; d < RetroConvert.DitherNames.Length; d++)
                 {
                     int ff = f, dd = d;
                     bool fill = d == 1;
-                    test("Convert: " + Short(RetroConvert.FormatNames[f]) + ", " + new[] { "no dither", "ordered", "diffusion" }[d] + (fill ? ", fill" : ""),
+                    test("Convert: " + Short(RetroConvert.FormatNames[f]) + ", " + RetroConvert.DitherShort[d] + (fill ? ", fill" : ""),
                          delegate { ConvertOne(photo, dir, ff, dd, fill); });
                 }
+            // Clean edges with some dithering mixed in (ZX Spectrum): each amount and kind makes a good file
+            foreach (int amount in new[] { 0, 50, 100 })
+                foreach (int pattern in new[] { 0, 1 })
+                {
+                    if (amount == 0 && pattern == 1) continue;        // 0%: no dithering of either kind
+                    int aa = amount, pp = pattern;
+                    test("Convert: ZX Spectrum, clean edges + " + amount + "% " + (pattern == 1 ? "error diffusion" : "ordered"),
+                         delegate { ConvertOne(photo, dir, 0, 3, false, aa, pp); });
+                }
+            // Clean edges on every other format, with error diffusion mixed in
+            for (int f = 1; f < RetroConvert.FormatNames.Length; f++)
+            {
+                int ff = f;
+                test("Convert: " + Short(RetroConvert.FormatNames[f]) + ", clean edges + 50% error diffusion", delegate { ConvertOne(photo, dir, ff, 3, false, 50, 1); });
+            }
+            test("Clean edges: more dithering shades a gradient more finely", delegate
+            {
+                using (Bitmap g = Gradient(256, 192))
+                {
+                    int[] flat, half, full;
+                    RetroConvert.ToZx(g, false, 3, out flat, null, 0, 0);
+                    RetroConvert.ToZx(g, false, 3, out half, null, 50, 0);
+                    RetroConvert.ToZx(g, false, 3, out full, null, 100, 0);
+                    int c0 = Changes(flat), c50 = Changes(half), c100 = Changes(full);
+                    Expect(c50 > c0 && c100 > c50, "colour changes along the rows: " + c0 + " at 0%, " + c50 + " at 50%, " + c100 + " at 100% (they should grow)");
+                }
+            });
+            // adjusting the picture before converting (brightness, contrast, saturation, hue)
+            test("Convert: ZX Spectrum, picture adjusted", delegate
+            {
+                string sub = Path.Combine(dir, "convert");
+                Directory.CreateDirectory(sub);
+                var adj = PictureAdjust.Clamped(20, 40, 50, 30);
+                string dest = RetroConvert.ConvertFile(photo, new ConvertOptions { Format = 0, Dither = 1, Adjust = adj, DestDir = sub });
+                Expect(File.Exists(dest), "no file was made");
+            });
+            test("Adjust: brightness lightens, the black borders stay black", delegate
+            {
+                using (Bitmap g = Gradient(256, 96))                   // half the screen's height: black borders above and below
+                {
+                    string ext; double lpp; int screenH;
+                    var plain = new RetroSim { Machine = 0, Dither = 0 };
+                    var light = plain.Copy(); light.Adjust = PictureAdjust.Clamped(60, 0, 0, 0);
+                    int[] a = Shown(RetroConvert.Preview(g, plain, null, out ext, out lpp, out screenH), ext);
+                    int[] b = Shown(RetroConvert.Preview(g, light, null, out ext, out lpp, out screenH), ext);
+                    Expect(Luma(b, 72, 120) > Luma(a, 72, 120) + 10, "the picture did not get lighter (" + (int)Luma(a, 72, 120) + " became " + (int)Luma(b, 72, 120) + ")");
+                    Expect(Luma(b, 0, 8) < 1 && Luma(b, 184, 192) < 1, "the black borders were lightened too");
+                }
+            });
+            test("Adjust: Auto stretches a dull picture", delegate
+            {
+                using (var dull = new Bitmap(120, 80, PixelFormat.Format32bppArgb))
+                {
+                    using (Graphics g = Graphics.FromImage(dull))
+                    using (var br = new LinearGradientBrush(new Rectangle(0, 0, 120, 80), Color.FromArgb(100, 100, 100), Color.FromArgb(150, 150, 150), 0f))
+                        g.FillRectangle(br, 0, 0, 120, 80);
+                    PictureAdjust a = RetroConvert.AutoLevels(dull, null);
+                    Expect(a.Contrast > 50, "Auto gave contrast " + a.Contrast + " for a picture with little contrast");
+                    Expect(Math.Abs(a.Brightness) < 15, "Auto moved the brightness of a picture centred on grey by " + a.Brightness);
+                }
+            });
             test("Convert: never overwrites (a taken name gets a number)", delegate
             {
                 var o = new ConvertOptions { Format = 0, Dither = 1, DestDir = dir };
@@ -123,6 +184,31 @@ static class SelfTest
                             byte[] data = RetroConvert.Preview(fr, m, false, 1, 0.5, 0.5, lockPal, out ext, out lpp, out screenH);
                             string platform; RetroGeom geom;
                             using (Bitmap back = Retro.LoadMemory("frame" + ext, data, out platform, out geom)) { }
+                        }
+                    }
+                }
+            });
+
+            test("Retro preview: Clean edges keeps one position for every frame", delegate
+            {
+                using (Bitmap a = Picture(200, 120, false))
+                using (Bitmap b = Stripes(200, 120, 4))
+                {
+                    var sample = new List<Bitmap> { a, b };
+                    foreach (int m in new[] { 0, 1, 2, 5 })           // ZX Spectrum, C64 multicolour and hires, MSX
+                    {
+                        string name = Short(RetroConvert.PreviewNames[m]);
+                        int[] pos = RetroConvert.PreviewLock(sample, m, false, 0.5, 0.5, 3);
+                        int at = m == 1 ? 1 : 0;                      // the C64 multicolour's background comes first
+                        Expect(pos != null && pos.Length == at + 2, "no position was chosen for the animation (" + name + ")");
+                        Expect(pos[at] >= -4 && pos[at] <= 3 && pos[at + 1] >= -4 && pos[at + 1] <= 3, "the picture was moved too far (" + name + "): " + pos[at] + ", " + pos[at + 1]);
+                        string ext; double lpp; int screenH;
+                        foreach (Bitmap fr in sample)
+                        {
+                            byte[] data = RetroConvert.Preview(fr, m, false, 3, 0.5, 0.5, pos, out ext, out lpp, out screenH);
+                            string platform; RetroGeom geom;
+                            using (Bitmap back = Retro.LoadMemory("frame" + ext, data, out platform, out geom))
+                                Expect(back.Width > 0 && back.Height > 0, "RECOIL could not show the frame (" + name + ")");
                         }
                     }
                 }
@@ -204,11 +290,11 @@ static class SelfTest
         }
     }
 
-    static void ConvertOne(string photo, string dir, int f, int dither, bool fill)
+    static void ConvertOne(string photo, string dir, int f, int dither, bool fill, int amount = 25, int pattern = 0)
     {
         string sub = Path.Combine(dir, "convert");
         Directory.CreateDirectory(sub);
-        string dest = RetroConvert.ConvertFile(photo, new ConvertOptions { Format = f, Dither = dither, Fill = fill, DestDir = sub });
+        string dest = RetroConvert.ConvertFile(photo, new ConvertOptions { Format = f, Dither = dither, Fill = fill, Amount = amount, Pattern = pattern, DestDir = sub });
         Expect(File.Exists(dest), "no file was made");
         long bytes; string platform; int frames; RetroGeom geom;
         using (Bitmap b = Retro.Load(dest, out bytes, out platform, out frames, out geom))
@@ -220,6 +306,45 @@ static class SelfTest
             Expect(r.Colours >= 2, "the picture has only " + r.Colours + " colour");
             Expect(r.Colours <= FmtColours[f], "the picture uses " + r.Colours + " colours, more than the " + FmtColours[f] + " the format can show");
         }
+    }
+
+    // a smooth grey-blue ramp from left to right
+    static Bitmap Gradient(int w, int h)
+    {
+        var b = new Bitmap(w, h, PixelFormat.Format32bppArgb);
+        using (Graphics g = Graphics.FromImage(b))
+        using (var br = new System.Drawing.Drawing2D.LinearGradientBrush(new Rectangle(0, 0, w, h), Color.FromArgb(10, 10, 40), Color.FromArgb(220, 220, 255), 0f))
+            g.FillRectangle(br, 0, 0, w, h);
+        return b;
+    }
+
+    // the screen a preview's bytes show, as RECOIL decodes them, scaled to 256 pixels across
+    static int[] Shown(byte[] data, string ext)
+    {
+        string platform; RetroGeom geom;
+        using (Bitmap b = Retro.LoadMemory("adjust" + ext, data, out platform, out geom))
+        {
+            var px = new int[256 * 192];
+            for (int y = 0; y < 192; y++)
+                for (int x = 0; x < 256; x++) px[y * 256 + x] = b.GetPixel(x * b.Width / 256, y * b.Height / 192).ToArgb();
+            return px;
+        }
+    }
+
+    // the average brightness (0..255) of screen lines y0 to y1 (256 pixels a row)
+    static double Luma(int[] px, int y0, int y1)
+    {
+        double t = 0;
+        for (int i = y0 * 256; i < y1 * 256; i++) t += ((px[i] >> 16) & 255) * 0.299 + ((px[i] >> 8) & 255) * 0.587 + (px[i] & 255) * 0.114;
+        return t / ((y1 - y0) * 256);
+    }
+
+    // how often a pixel differs from the one to its left (256 pixels a row)
+    static int Changes(int[] px)
+    {
+        int n = 0;
+        for (int i = 1; i < px.Length; i++) if ((i & 255) != 0 && px[i] != px[i - 1]) n++;
+        return n;
     }
 
     static void PreviewOne(int m)
