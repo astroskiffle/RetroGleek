@@ -144,14 +144,14 @@ partial class MainForm
         finally { Cursor = Cursors.Default; }
         Marks.Moved(backPairs);
 
-        foreach (string d in touched)
-            foreach (TreeNode n in FindLoadedNodes(d)) RefreshFolderNode(n);
-        if (follow != null) { ShowFolder(follow, null, -1, true); RevealInTree(follow); }
+        if (follow != null) { ShowFolder(follow, null, -1, true); tree.Reveal(follow); }
         else if (gd != null && touched.Exists(x => grid.Covers(x)))
         {
             if (firstBack != null && File.Exists(firstBack) && grid.Covers(Path.GetDirectoryName(firstBack))) ShowFolder(gd, firstBack, -1, true);
             else grid.Rescan();
         }
+        foreach (KeyValuePair<string, string> bp in backPairs) if (Directory.Exists(bp.Value)) OtherPanesFollow(bp.Key, bp.Value);
+        FilesChanged(touched, true, grid);                 // the active pane is shown again above
         status.Text = "  Undid the " + st.Text + (back != st.Pairs.Count ? " (" + back + " of " + st.Pairs.Count + " items)" : "");
         if (errs.Count > 0)
         {

@@ -16,7 +16,9 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
+using System.Threading;
 using System.Windows.Forms;
 using WinTimer = System.Windows.Forms.Timer;
 
@@ -160,9 +162,10 @@ partial class MainForm
         }
         else Watch(paneB, null);                           // the hidden pane: no auto-refresh
         MarkActive();
+        UpdatePaneButtons();
         if (!viewing && !comparing)
         {
-            status.Text = on ? "  Dual pane: click a pane (or press Tab) to make it active; drag pictures across, or Shift+F5 / Shift+F6 copy / move them to the other pane"
+            status.Text = on ? "  Dual pane: click a pane (or press " + KeysOf("switch-pane") + ") to make it active; drag pictures across, or " + Keys2("copy-other", "move-other") + " copy / move them to the other pane"
                              : "  Single pane";
             if (on) grid.Focus();
         }
@@ -185,9 +188,10 @@ partial class MainForm
         if (!addrBox.Focused) addrBox.Text = grid.Dir ?? "";
         UpdateNavButtons();
         MarkActive();
-        if (grid.Dir != null) RevealInTree(grid.Dir);
+        if (grid.Dir != null) tree.Reveal(grid.Dir);
         if (!viewing && !comparing) { Text = (grid.Dir ?? "RetroGleek") + " - RetroGleek"; UpdateStatus(); }
         UpdatePreview();
+        UpdatePaneButtons();
     }
 
     // Tab: the other pane
@@ -296,5 +300,278 @@ partial class MainForm
         if (grid.Dir != null && Util.SameDir(grid.Dir, dest) && !grid.Recursive) { Warn("Both panes show the same folder."); return; }
         lastPane = grid;                                   // the selected pictures, not the folder in the tree
         TransferTo(move, dest);
+    }
+
+    // ---- the pane buttons, right of the address bar: dual / single pane, swap the panes' folders, copy and move to
+    // the other pane. Each is greyed out until it can be used; the copy / move arrows point at the other pane.
+
+    Button dualBtn, swapBtn, copyOtherBtn, moveOtherBtn, previewBtn;
+    Panel paneTools, drivePanel;
+    readonly List<Button> driveBtns = new List<Button>();
+
+    // the right half of the address bar (the address box keeps the left half)
+    void BuildPaneTools()
+    {
+        paneTools = new Panel { Dock = DockStyle.Right, BackColor = addrPanel.BackColor };
+        drivePanel = new Panel { Dock = DockStyle.Fill, BackColor = addrPanel.BackColor };   // the drives, right of the pane buttons
+        drivePanel.Resize += delegate { LayoutDrives(); };
+        paneTools.Controls.Add(drivePanel);                // fill first, edge-docked after
+        previewBtn = PaneButton("Preview pane: a large preview of the focused picture (" + KeysOf("preview") + ")", DrawPreviewIcon, delegate { SetPreview(!preview.Visible); grid.Focus(); });
+        moveOtherBtn = PaneButton("Move the selection to the other pane's folder (" + KeysOf("move-other") + ")", DrawMoveIcon, delegate { SendToOther(true); grid.Focus(); });
+        copyOtherBtn = PaneButton("Copy the selection to the other pane's folder (" + KeysOf("copy-other") + ")", DrawCopyIcon, delegate { SendToOther(false); grid.Focus(); });
+        swapBtn = PaneButton("Swap the two panes' folders", DrawSwapIcon, delegate { SwapPanes(); grid.Focus(); });
+        dualBtn = PaneButton("Dual pane: two folders side by side, or one (" + KeysOf("dual") + ")", DrawDualIcon, delegate { SetDual(!dual); grid.Focus(); });
+        // docked from the left: the last added is leftmost
+        paneTools.Controls.Add(Spacer(14));               // a wider gap before the drives
+        paneTools.Controls.Add(previewBtn); paneTools.Controls.Add(Spacer(4));
+        paneTools.Controls.Add(moveOtherBtn); paneTools.Controls.Add(Spacer(4));
+        paneTools.Controls.Add(copyOtherBtn); paneTools.Controls.Add(Spacer(4));
+        paneTools.Controls.Add(swapBtn); paneTools.Controls.Add(Spacer(4));
+        paneTools.Controls.Add(dualBtn); paneTools.Controls.Add(Spacer(10));
+        addrPanel.Controls.Add(paneTools);
+        addrPanel.Resize += delegate { SizePaneTools(); };
+        SizePaneTools();
+        UpdatePaneButtons();
+    }
+
+    void SizePaneTools()
+    {
+        int need = Util.S(10 + 5 * 34 + 4 * 4 + 14);
+        paneTools.Width = Math.Max(need, addrPanel.ClientSize.Width / 2);
+    }
+
+    Button PaneButton(string tooltip, Action<Graphics, Button, Color> draw, EventHandler click)
+    {
+        var b = new Button
+        {
+            Dock = DockStyle.Left, Width = Util.S(34), TabStop = false, FlatStyle = FlatStyle.Flat,
+            BackColor = Color.FromArgb(52, 52, 52), ForeColor = Color.Gainsboro
+        };
+        b.FlatAppearance.BorderSize = 0;
+        b.FlatAppearance.MouseOverBackColor = Color.FromArgb(72, 72, 72);
+        b.Click += click;
+        b.EnabledChanged += delegate { b.Invalidate(); };
+        b.Paint += delegate (object sender, PaintEventArgs e)
+        {
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            draw(e.Graphics, b, b.Enabled ? Color.Gainsboro : Color.FromArgb(100, 100, 100));
+        };
+        navTip.SetToolTip(b, tooltip);
+        return b;
+    }
+
+    static Pen IconPen(Color c) { var p = new Pen(c, Math.Max(1.4f, Util.K * 1.6f)); p.StartCap = p.EndCap = LineCap.Round; p.LineJoin = LineJoin.Round; return p; }
+
+    // two side-by-side panes (filled blue behind them when dual pane is on: the button's own colour)
+    static void DrawDualIcon(Graphics g, Button b, Color c)
+    {
+        float u = Math.Min(b.ClientSize.Width, b.ClientSize.Height) / 16f, cx = b.ClientSize.Width / 2f, cy = b.ClientSize.Height / 2f;
+        using (Pen p = IconPen(c))
+        {
+            g.DrawRectangle(p, cx - 7 * u, cy - 5 * u, 14 * u, 10 * u);
+            g.DrawLine(p, cx, cy - 5 * u, cx, cy + 5 * u);
+        }
+    }
+
+    // arrows both ways
+    static void DrawSwapIcon(Graphics g, Button b, Color c)
+    {
+        float u = Math.Min(b.ClientSize.Width, b.ClientSize.Height) / 16f, cx = b.ClientSize.Width / 2f, cy = b.ClientSize.Height / 2f;
+        using (Pen p = IconPen(c))
+        {
+            g.DrawLine(p, cx - 6 * u, cy - 2.5f * u, cx + 6 * u, cy - 2.5f * u);
+            g.DrawLines(p, new[] { new PointF(cx + 3 * u, cy - 5.5f * u), new PointF(cx + 6 * u, cy - 2.5f * u), new PointF(cx + 3 * u, cy + 0.5f * u) });
+            g.DrawLine(p, cx + 6 * u, cy + 2.5f * u, cx - 6 * u, cy + 2.5f * u);
+            g.DrawLines(p, new[] { new PointF(cx - 3 * u, cy - 0.5f * u), new PointF(cx - 6 * u, cy + 2.5f * u), new PointF(cx - 3 * u, cy + 5.5f * u) });
+        }
+    }
+
+    // a picture at the active pane's side, an arrow, and the picture at the other side (dashed where it was, for move)
+    void DrawTransferIcon(Graphics g, Button b, Color c, bool move)
+    {
+        float u = Math.Min(b.ClientSize.Width, b.ClientSize.Height) / 16f, cx = b.ClientSize.Width / 2f, cy = b.ClientSize.Height / 2f;
+        float dir = act == paneB ? -1f : 1f;                   // towards the other pane
+        float sx = cx - dir * 5 * u, tx = cx + dir * 5 * u, s = 2.6f * u;
+        using (Pen p = IconPen(c))
+        {
+            if (move) p.DashStyle = DashStyle.Dot;
+            g.DrawRectangle(p, sx - s, cy - s, 2 * s, 2 * s);
+            p.DashStyle = DashStyle.Solid;
+            g.DrawRectangle(p, tx - s, cy - s, 2 * s, 2 * s);
+            float a0 = sx + dir * (s + 1.2f * u), a1 = tx - dir * (s + 1.2f * u);
+            g.DrawLine(p, a0, cy, a1, cy);
+            g.DrawLines(p, new[] { new PointF(a1 - dir * 1.6f * u, cy - 1.6f * u), new PointF(a1, cy), new PointF(a1 - dir * 1.6f * u, cy + 1.6f * u) });
+        }
+    }
+
+    void DrawCopyIcon(Graphics g, Button b, Color c) { DrawTransferIcon(g, b, c, false); }
+    void DrawMoveIcon(Graphics g, Button b, Color c) { DrawTransferIcon(g, b, c, true); }
+
+    void UpdatePaneButtons()
+    {
+        if (dualBtn == null) return;
+        bool pv = preview != null && preview.Visible;
+        previewBtn.BackColor = pv ? Color.FromArgb(60, 130, 230) : Color.FromArgb(52, 52, 52);
+        previewBtn.FlatAppearance.MouseOverBackColor = pv ? Color.FromArgb(80, 150, 245) : Color.FromArgb(72, 72, 72);
+        string here = grid != null && grid.Dir != null ? Path.GetPathRoot(grid.Dir) : null;
+        foreach (Button db in driveBtns)                      // the drive of the active pane's folder stands out
+        {
+            bool on = here != null && string.Equals(((DriveSpot)db.Tag).Root, here, StringComparison.OrdinalIgnoreCase);
+            Color want = on ? Color.FromArgb(70, 70, 70) : Color.FromArgb(52, 52, 52);
+            if (db.BackColor != want) db.BackColor = want;
+        }
+        dualBtn.BackColor = dual ? Color.FromArgb(60, 130, 230) : Color.FromArgb(52, 52, 52);
+        dualBtn.FlatAppearance.MouseOverBackColor = dual ? Color.FromArgb(80, 150, 245) : Color.FromArgb(72, 72, 72);
+        swapBtn.Enabled = CanSwap();
+        bool send = CanSendToOther();
+        copyOtherBtn.Enabled = moveOtherBtn.Enabled = send;
+        copyOtherBtn.Invalidate(); moveOtherBtn.Invalidate();   // the arrows follow the active pane
+    }
+
+    // ---- swapping the two panes' folders
+
+    bool CanSwap()
+    {
+        return dual && !viewing && !comparing && paneA.Grid.Dir != null && paneB.Grid.Dir != null && !Util.SameDir(paneA.Grid.Dir, paneB.Grid.Dir);
+    }
+
+    // each pane opens the other's folder (filters and the Subfolders switch are reset, as for any new folder)
+    void SwapPanes()
+    {
+        if (!CanSwap()) return;
+        string a = paneA.Grid.Dir, b = paneB.Grid.Dir;
+        foreach (Pane p in Panes) p.Grid.Recursive = false;
+        SetSubfolders(false, false);
+        paneA.Grid.Load(b, null, -1);
+        paneB.Grid.Load(a, null, -1);
+        tree.Reveal(act == paneA ? b : a);
+    }
+
+    // ---- the drive buttons: one per local drive that is ready (fixed, removable, optical with a disc). Network
+    // drives are left out, as in the tree, and so are empty card-reader slots and empty optical drives. Read in the
+    // background (asking a card reader whether it is ready can be slow), at start-up and whenever Windows says a drive
+    // was plugged in or out. A click opens the drive in the active pane. More drives than fit: the tree has them all.
+
+    sealed class DriveSpot { public string Root, Label, Tip; public DriveType Kind; }
+
+    void RefreshDriveButtons()
+    {
+        ThreadPool.QueueUserWorkItem(delegate
+        {
+            var found = new List<DriveSpot>();
+            try
+            {
+                foreach (DriveInfo d in DriveInfo.GetDrives())
+                {
+                    DriveType t = d.DriveType;
+                    if (t != DriveType.Fixed && t != DriveType.Removable && t != DriveType.CDRom) continue;
+                    try
+                    {
+                        if (!d.IsReady) continue;
+                        string label = "";
+                        try { label = d.VolumeLabel; } catch (Exception) { }
+                        string name = (label.Length > 0 ? label : t == DriveType.Removable ? "Removable Disk" : t == DriveType.CDRom ? "CD/DVD Drive" : "Local Disk")
+                                      + " (" + d.Name.TrimEnd('\\') + ")";
+                        string space = "";
+                        try { space = "\n" + Util.FmtSize(d.AvailableFreeSpace) + " free of " + Util.FmtSize(d.TotalSize); } catch (Exception) { }
+                        found.Add(new DriveSpot { Root = d.Name, Label = d.Name.TrimEnd('\\'), Kind = t, Tip = name + space + "\nClick to open it in the active pane" });
+                    }
+                    catch (Exception) { }                     // removed while we asked
+                }
+            }
+            catch (Exception) { return; }
+            Util.Post(this, delegate { SetDriveButtons(found); });
+        });
+    }
+
+    void SetDriveButtons(List<DriveSpot> found)
+    {
+        if (drivePanel == null) return;
+        drivePanel.SuspendLayout();
+        try
+        {
+            foreach (Button b in driveBtns) { drivePanel.Controls.Remove(b); b.Dispose(); }
+            driveBtns.Clear();
+            foreach (DriveSpot d in found)
+            {
+                DriveSpot spot = d;
+                var b = new Button
+                {
+                    Width = Util.S(46), TabStop = false, FlatStyle = FlatStyle.Flat, Tag = spot,
+                    BackColor = Color.FromArgb(52, 52, 52), ForeColor = Color.Gainsboro
+                };
+                b.FlatAppearance.BorderSize = 0;
+                b.FlatAppearance.MouseOverBackColor = Color.FromArgb(80, 80, 80);
+                b.Click += delegate { OpenDrive(spot.Root); };
+                b.Paint += delegate (object sender, PaintEventArgs e) { DrawDriveButton(e.Graphics, b, spot); };
+                navTip.SetToolTip(b, spot.Tip);
+                driveBtns.Add(b);
+                drivePanel.Controls.Add(b);
+            }
+        }
+        finally { drivePanel.ResumeLayout(false); }
+        LayoutDrives();
+        UpdatePaneButtons();
+    }
+
+    // side by side from the left; those that don't fit are hidden
+    void LayoutDrives()
+    {
+        if (drivePanel == null) return;
+        int x = 0, gap = Util.S(4), h = drivePanel.ClientSize.Height;
+        foreach (Button b in driveBtns)
+        {
+            b.SetBounds(x, 0, b.Width, h);
+            b.Visible = x + b.Width <= drivePanel.ClientSize.Width;
+            x += b.Width + gap;
+        }
+    }
+
+    void OpenDrive(string root)
+    {
+        if (viewing || comparing) return;
+        if (!Directory.Exists(root)) { Warn(root.TrimEnd('\\') + " isn't available right now."); RefreshDriveButtons(); return; }
+        ShowFolder(root, null, -1, false);
+        tree.Reveal(root);
+        grid.Focus();
+    }
+
+    // a small drive icon (internal disk, USB stick, disc) and the letter
+    static void DrawDriveButton(Graphics g, Button b, DriveSpot d)
+    {
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        float h = b.ClientSize.Height, u = Math.Min(b.ClientSize.Width, h) / 16f, ix = Util.S(6), cy = h / 2f;
+        using (Pen p = IconPen(Color.FromArgb(170, 176, 186)))
+        {
+            if (d.Kind == DriveType.CDRom)
+            {
+                g.DrawEllipse(p, ix, cy - 4.5f * u, 9 * u, 9 * u);
+                g.DrawEllipse(p, ix + 3.3f * u, cy - 1.2f * u, 2.4f * u, 2.4f * u);
+            }
+            else if (d.Kind == DriveType.Removable)            // a USB stick: body and plug
+            {
+                g.DrawRectangle(p, ix + 1.5f * u, cy - 1.5f * u, 6 * u, 6 * u);
+                g.DrawRectangle(p, ix + 3 * u, cy - 5 * u, 3 * u, 3.5f * u);
+            }
+            else
+            {
+                g.DrawRectangle(p, ix, cy - 3 * u, 9 * u, 6 * u);
+                using (var led = new SolidBrush(Color.FromArgb(80, 200, 100))) g.FillRectangle(led, ix + 6 * u, cy + 0.5f * u, 1.6f * u, 1.2f * u);
+            }
+        }
+        TextRenderer.DrawText(g, d.Label, b.Font, new Rectangle((int)(ix + 10 * u), 0, b.ClientSize.Width - (int)(ix + 10 * u), b.ClientSize.Height), Color.Gainsboro,
+            TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
+    }
+
+    // a frame with a picture-like square on its right part
+    static void DrawPreviewIcon(Graphics g, Button b, Color c)
+    {
+        float u = Math.Min(b.ClientSize.Width, b.ClientSize.Height) / 16f, cx = b.ClientSize.Width / 2f, cy = b.ClientSize.Height / 2f;
+        using (Pen p = IconPen(c))
+        {
+            g.DrawRectangle(p, cx - 7 * u, cy - 5 * u, 14 * u, 10 * u);
+            g.DrawLine(p, cx + 1 * u, cy - 5 * u, cx + 1 * u, cy + 5 * u);
+            using (var br = new SolidBrush(c)) g.FillRectangle(br, cx + 2.6f * u, cy - 2.4f * u, 3 * u, 3 * u);
+        }
     }
 }

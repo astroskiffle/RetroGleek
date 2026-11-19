@@ -44,7 +44,7 @@ fullscreen.
 | Preview pane | Alt+P (or View > Preview pane) shows a large preview of the focused picture to the right of the thumbnails or the Details list, with its name, dimensions, platform, size, date, marks (and its subfolder when Subfolders is on). For a photo it adds the camera, lens, exposure (shutter, aperture, ISO, focal length) and when it was taken, from its EXIF details (never the GPS position). For a retro picture it adds the original resolution on the computer's screen and the colours the picture uses: how many ("11 of 16 colours used"), with a strip of swatches, most used first, when there are 64 or fewer. Retro pictures are enlarged with hard edges, with the viewer's badges underneath (not clickable): the computer badge, and the signal, scanlines, mask, glow and TV aspect the viewer would show the picture with (your own, or the automatic ones for its computer). Drag its left edge to make it wider or narrower. Off by default; on / off and its width are remembered next time |
 | Favourite folders | Ctrl+D (or Go > Favourites > Add this folder, or right-click a folder in the tree) adds the open folder; it appears with a star in the folder tree after Desktop, Documents, Downloads and Pictures, and in Go > Favourites. Ctrl+D again, or right-click > Remove from favourites, takes it off the list (the folder itself is never touched). Up to 20, remembered next time. A favourite in the tree is a shortcut: it can't be dragged, renamed or deleted from there |
 | Recent folders | Go > Recent folders lists the last 10 folders you opened, remembered next time |
-| Dual pane | Ctrl+Shift+2 (or View > Dual pane) shows two folders side by side, like Directory Opus's dual mode, with one folder tree on the left that follows the **active pane** (outlined in blue along its top). Click a pane, or press **Tab**, to make it active; clicking a folder in the tree opens it in the active pane. Each pane keeps its own folder, filter, sort, Show choice, Subfolders switch, Details / Thumbnails view, thumbnail size and back / forward history, and refreshes by itself; the address bar and the filter bar show the active pane's. Everything else (menus, keys, marks, Properties, the preview pane, the viewer) works on the active pane. **Moving pictures across:** drag them from one pane onto the other (as in Explorer: the same drive moves, another drive copies; hold Ctrl to copy or Shift to move), or select them and press **Shift+F5** to copy or **Shift+F6** to move them to the other pane's folder (also Edit > Copy to / Move to the other pane, and the right-click menu). Files dragged in from Explorer onto a pane are copied there (hold Shift to move them). Nothing is ever overwritten (a name that is taken gets a number), local drives only, and Ctrl+Z undoes a move. Drag the bar between the panes to resize them. Dual pane, both folders and the split are remembered next time; Ctrl+Shift+2 again goes back to one pane |
+| Dual pane | Ctrl+Shift+2 (or View > Dual pane) shows two folders side by side, like Directory Opus's dual mode, with one folder tree on the left that follows the **active pane** (outlined in blue along its top). Click a pane, or press **Tab**, to make it active; clicking a folder in the tree opens it in the active pane. Each pane keeps its own folder, filter, sort, Show choice, Subfolders switch, Details / Thumbnails view, thumbnail size and back / forward history, and refreshes by itself; the address bar and the filter bar show the active pane's. Everything else (menus, keys, marks, Properties, the preview pane, the viewer) works on the active pane. **Moving pictures across:** drag them from one pane onto the other (as in Explorer: the same drive moves, another drive copies; hold Ctrl to copy or Shift to move), or select them and press **Shift+F5** to copy or **Shift+F6** to move them to the other pane's folder (also Edit > Copy to / Move to the other pane, and the right-click menu). **Buttons right of the address bar** do the same at a click: dual / single pane (blue while dual pane is on), swap the two panes' folders (also View > Swap the panes' folders), and copy or move to the other pane, with arrows that point at it; each is greyed out until it can be used. Next to them, the **preview pane** button (blue while it is shown, as Alt+P), then **a button for each drive** (internal, USB and optical drives with a disc in them; not network drives or empty card-reader slots): a click opens that drive in the active pane, the drive of the active pane's folder is highlighted, and resting the pointer on one shows its name and free space. Drives appear and disappear as you plug them in or out; if there are more than fit, the folder tree still lists them all. Files dragged in from Explorer onto a pane are copied there (hold Shift to move them). Nothing is ever overwritten (a name that is taken gets a number), local drives only, and Ctrl+Z undoes a move. Drag the bar between the panes to resize them. Dual pane, both folders and the split are remembered next time; Ctrl+Shift+2 again goes back to one pane |
 | Back / forward / up one folder | Alt+Left / Alt+Right / Alt+Up (or Backspace), or the buttons |
 | Sort | The **Sort** pull-down (name, date modified, size, type, platform, dimensions, frames, colours, status, rating, label) and its arrow button to reverse; or right-click > Sort by |
 | Details on tiles | Right-click > Show details on tiles; rest the pointer on a tile for a tooltip |
@@ -120,7 +120,7 @@ Everywhere: **F11** fullscreen, **Ctrl+O** open, **F1** every key on one page, p
   decoders installed in Windows) plus the bundled `RECOIL.cs`, which is pure C# with no `unsafe` or native code. You can check this yourself: the whole program is a handful of readable C# files plus `RECOIL.cs`.
 - **Writes files only when you ask** (save, copy / cut / paste, drag-and-drop, rename, delete, new folder, audit report, retro-format conversion (new files only), a
   lossless JPEG turn, a star rating or a title, description, keywords, author and copyright written into a JPEG or PNG file after you confirm it, and
-  **marks.tsv** when you rate, label or tag a picture), plus one small plain-text **settings.ini** next to `RetroGleek.exe`, written when you close RetroGleek. It remembers the window
+  **marks.tsv** when you rate, label or tag a picture, and the self-test's own temporary folder, deleted when it ends), plus one small plain-text **settings.ini** next to `RetroGleek.exe`, written when you close RetroGleek. It remembers the window
   size and position, the folder-tree width, sort order, thumbnail size, details on tiles, retro formats on / off, the
   viewer options (Fit to screen, checkerboard, enlarged pixels, True TV aspect, scanlines, phosphor mask, video signal, glow, curvature, automatic effects, presets, recent copy / move folders, favourite and recent folders, filmstrip, preview pane, info bar, EXIF panel, slideshow interval) and the last
   folder. If that folder can't be written (for example Program Files), it goes to `%LOCALAPPDATA%\RetroGleek\` instead.
@@ -189,6 +189,27 @@ One report per subfolder:
 ```
 for /d %%F in ("D:\Retro\*") do RetroGleek.exe --audit "%%F" --out "D:\Reports\%%~nxF.html" --overwrite
 ```
+
+### Self-test
+
+**Help > Run the self-test**, `RetroGleek.exe --selftest` or `RetroGleekCli.exe --selftest` tries every part of
+RetroGleek that writes or changes a picture file, on pictures it makes itself, in a new folder of its own under the
+Windows temporary folder, which it deletes afterwards. Nothing else on the PC is read or written. It covers:
+
+- Save as PNG (truecolour with transparency, opaque, few colours), read back and compared pixel by pixel, and that
+  an existing file is never overwritten
+- the colour count and swatches
+- Convert to a retro format: every format with every dithering, read back by RECOIL, checked for size and number of
+  colours, and that a name that is taken gets a number
+- the retro preview for every computer, and the colours kept for every frame of an animation
+- the animated GIF writer: frames, merged repeated frames, frame times and pixels, read back by Windows
+- star ratings and title, description, keywords, author and copyright written into JPEG and PNG files: they read
+  back, other details are kept, and the picture itself is unchanged
+- the lossless JPEG turn, and that a photo which can't be turned without loss is refused and left as it was
+
+It takes a few seconds. The window version shows the result in a message box (the menu entry runs in the
+background); `RetroGleekCli.exe --selftest` prints every test. Exit code **0** = all passed, **1** = some failed.
+Worth running after building a changed copy.
 
 <a id="retro-computer-formats"></a>
 
@@ -278,6 +299,16 @@ You can also drag a file or folder onto the window, or use **Ctrl+O**.
 | `Controls.cs` | Rename dialog and the custom dark controls |
 | `Canvas.cs` | The full-canvas viewer |
 | `ThumbGrid.cs` | The thumbnail grid |
+| `MainForm.cs` | The main window: fields, layout, remembered settings and full screen |
+| `MainForm.Tree.cs` | Drives plugged in or out, favourite and recent folders |
+| `FolderTree.cs` | The folder tree: folders listed as you open them, kept up to date by folder watchers, drives, favourites |
+| `MainForm.Browse.cs` | Browsing and viewing, the address bar, history, filter, sort, marks and effect presets |
+| `MainForm.Compare.cs` | Starting and ending side-by-side compare, before / after and the retro preview |
+| `CompareView.cs` | The compare view itself: two viewers side by side, the retro preview's bar, its Save and its keys |
+| `MainForm.Commands.cs` | The command table: every command with its keys, where they work and when it is available; the menu bar, the keyboard and the F1 page are built from it |
+| `MainForm.Menus.cs` | Context menus, the menu bar, keyboard shortcuts, help and about |
+| `MainForm.FileOps.cs` | Rename, copy, move, paste, delete, new folder and drag and drop |
+| `MainForm.Tools.cs` | Properties, PNG export, lossless turns, conversion, duplicates, ratings, audit and contact sheets |
 | `MainForm.Dual.cs` | The browser panes and dual-pane mode (two folders side by side, one folder tree) |
 | `MainForm.Undo.cs` | Undo for renames, batch renames and moves |
 | `BatchRename.cs` | Batch rename: pattern, preview and safe renaming |
@@ -291,7 +322,7 @@ You can also drag a file or folder onto the window, or use **Ctrl+O**.
 | `JpegRotate.cs` | Lossless JPEG changes: the turn on disk, and writing your rating into the photo |
 | `RetroConvert.cs` | Converting pictures into retro formats (ZX Spectrum, C64 Koala, Atari ST Degas, Amiga IFF, MSX Screen 2 and 8), checked with RECOIL |
 | `WinCodecs.cs` | Pictures decoded by Windows' own codecs (WebP, AVIF, HEIC, JPEG XL, camera RAW); fast thumbnails of big JPEGs |
-| `MainForm.cs`, `MainForm.Files.cs` | The main window (one class in two files: layout and browsing; menus, file operations and keys) |
+| `SelfTest.cs` | The self-test (Help > Run the self-test, `--selftest`): every file writer tried on generated pictures |
 | `RECOIL.cs` | Bundled, modified C# build of RECOIL (retro formats) |
 | `RetroGleek.manifest` | Windows manifest: high-DPI awareness, Windows 10/11 compatibility |
 | `build.bat` | One-click build using the compiler included in Windows (`RetroGleek.exe` and the console companion `RetroGleekCli.exe`) |

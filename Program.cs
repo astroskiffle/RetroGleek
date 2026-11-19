@@ -36,6 +36,10 @@
 //   The open folder refreshes by itself when its files change (FileSystemWatcher, local drives only);
 //   the folder tree updates itself when folders change, and when a USB stick / card is plugged in or out
 //
+// SELF-TEST:  RetroGleek.exe --selftest (a message box), RetroGleekCli.exe --selftest (every result), or Help > Run the
+//   self-test. Every file writer is tried on generated pictures in a temporary folder of its own (SelfTest.cs).
+//   Exit code 0 = all passed, 1 = some failed.
+//
 // COMMAND LINE AUDIT (no window):  RetroGleek.exe --audit <folder> [--out <file>] [--no-thumbs] [--csv] [--overwrite]
 //   or the console companion, with progress and a summary:  RetroGleekCli.exe <folder> [same options] [--quiet]
 //   exit code 0 = all opened, 1 = some could not be opened, 2 = error
@@ -90,8 +94,19 @@
 //   Controls.cs        Prompt, WheelRouter, Gfx, DarkColors, DarkMenuRenderer, DarkCombo, DarkSlider
 //   Canvas.cs          the full-canvas viewer
 //   ThumbGrid.cs       the thumbnail grid
-//   MainForm.cs        the main window: layout, tree, browsing <-> viewing
-//   MainForm.Files.cs  the main window, continued: menus, file operations, export, address bar, keys
+//   MainForm.cs        the main window: fields, layout, remembered settings, full screen
+//   MainForm.Tree.cs   the main window, continued: drives plugged in or out, favourite and recent folders
+//   FolderTree.cs      the folder tree: lazy loading, folder watchers, drives, the favourites' nodes
+//   MainForm.Browse.cs the main window, continued: browsing <-> viewing, address bar, history, filter, sort,
+//                      marks, effect presets
+//   MainForm.Compare.cs the main window, continued: starting and ending compare, before / after, the retro preview
+//   CompareView.cs     the compare view itself: two viewers side by side, the retro preview's bar and its Save
+//   MainForm.Commands.cs the main window, continued: the command table: every command, its keys, where they work
+//                      and when it is available (the menu bar, the keys and the F1 page all come from it)
+//   MainForm.Menus.cs  the main window, continued: context menus, the menu bar, keyboard shortcuts, help, about
+//   MainForm.FileOps.cs the main window, continued: rename, copy, move, paste, delete, drag and drop, Copy to
+//   MainForm.Tools.cs  the main window, continued: Properties, PNG export, turns, conversion, duplicates,
+//                      ratings into files, audit, contact sheets
 //   MainForm.Undo.cs   the main window, continued: undo (Ctrl+Z) for renames, batch renames and moves
 //   MainForm.Dual.cs   the main window, continued: the browser panes, and dual-pane mode (two folders side by side,
 //                      one folder tree following the active pane; drag between them, Shift+F5 / Shift+F6)
@@ -113,6 +128,8 @@
 //                      file hashes, pixel hashes (retro screenshots trimmed and reduced), dHash / pHash fingerprints
 //   Metadata.cs        File > Properties: every EXIF, GPS, IPTC, XMP and PNG text detail a picture holds, and writing
 //                      the title, description, keywords, author and copyright into JPEG and PNG files (XMP)
+//   SelfTest.cs        the self-test (--selftest, Help > Run the self-test): converters, GIF writer, PNG export,
+//                      ratings and details written into files, the lossless JPEG turn, on generated pictures
 //   RECOIL.cs          generated RECOIL library (never edit by hand; see tools/downgrade_recoil.py)
 
 using System;
@@ -176,6 +193,9 @@ static class Program
     {
         foreach (string a in args)
             if (a == "--help" || a == "-h" || a == "/?") { Usage(Console.Out); return 0; }
+        foreach (string a in args)
+            if (string.Equals(a, "--selftest", StringComparison.OrdinalIgnoreCase))
+                return SelfTest.Run(delegate (string line) { Console.WriteLine(line); }, new List<string>()) == 0 ? 0 : 1;
         if (args.Length == 0) { Usage(Console.Error); return 2; }
         var list = new List<string>(args);
         bool hasAudit = list.Exists(x => string.Equals(x, "--audit", StringComparison.OrdinalIgnoreCase));
@@ -197,6 +217,9 @@ static class Program
         w.WriteLine("  --quiet        no progress, no summary (errors are still shown)");
         w.WriteLine();
         w.WriteLine("Exit code: 0 = every picture file opened, 1 = some could not be opened, 2 = error.");
+        w.WriteLine();
+        w.WriteLine("  RetroGleekCli.exe --selftest   tries every file writer on generated pictures in a temporary folder");
+        w.WriteLine("                                 (exit code 0 = all passed, 1 = some failed)");
     }
 #else
     [STAThread]
@@ -204,6 +227,17 @@ static class Program
     {
         foreach (string a in args)
             if (string.Equals(a, "--audit", StringComparison.OrdinalIgnoreCase)) return RunAudit(args, null, null);   // no window at all
+        foreach (string a in args)
+            if (string.Equals(a, "--selftest", StringComparison.OrdinalIgnoreCase))     // only a message box with the result
+            {
+                var lines = new List<string>();
+                int failed;
+                try { failed = SelfTest.Run(null, lines); }
+                catch (Exception ex) { failed = 1; lines.Add("FAIL  " + ex.Message); }
+                MessageBox.Show(SelfTest.Report(lines, failed), failed == 0 ? "RetroGleek self-test: passed" : "RetroGleek self-test: FAILED",
+                                MessageBoxButtons.OK, failed == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+                return failed == 0 ? 0 : 1;
+            }
         try
         {
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
