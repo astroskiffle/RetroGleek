@@ -20,9 +20,6 @@ the smart shaders and every picture gets the screen of its own computer:
 It opens hundreds of retro formats out of the box (Amiga, Atari, Commodore 64, ZX Spectrum, MSX, Amstrad CPC
 and many more, 567 file extensions in all) thanks to [RECOIL](https://github.com/pfusik/recoil).
 
-![The details list with platform, dimensions, colours, ratings and labels](images/bugs_daffy.png)
-**LEFT:**  How a modern PC renders the image  |  **RIGHT:** The same image rendered through smart shaders on RetroGleek 
-
 ### 🕹️ Your photos on an 8-bit computer
 
 Press **Shift+O** on any photo to see it as a ZX Spectrum, C64, Amstrad CPC or MSX would have shown it, with
@@ -66,10 +63,13 @@ result must match the SHA-256 listed on the release; if it doesn't, don't run th
    (**F8** hides them). In the viewer, **A** gives each picture the screen of its own computer (scanlines, phosphor
    mask, TV signal), **O** turns the effects off and on, and **Shift+O** shows the picture with and without them side
    by side.
-5. 🕹️ **A photo on an 8-bit computer.** Open any photo and press **Shift+O**: the right side shows it as it might look on
+![The details list with platform, dimensions, colours, ratings and labels](images/bugs_daffy.png)
+**LEFT:**  How a modern PC renders the image  |  **RIGHT:** The same image rendered through smart shaders on RetroGleek 
+   
+6. 🕹️ **A photo on an 8-bit computer.** Open any photo and press **Shift+O**: the right side shows it as it might look on
    a ZX Spectrum, C64, Amstrad CPC or MSX. **Q** changes the computer, **D** the dithering, **Shift+F** fills the
    screen, and **Ctrl+S** saves the computer's own file plus a PNG to share. Animated GIFs play too.
-6. ⭐ **Keep the best.** **Alt+1** .. **Alt+5** rate a picture, **Shift+1** .. **Shift+5** give it a colour label, **X**
+7. ⭐ **Keep the best.** **Alt+1** .. **Alt+5** rate a picture, **Shift+1** .. **Shift+5** give it a colour label, **X**
    tags it; the **Show** pull-down then lists only those.
 
 Everything is in the **menu bar**, with its shortcut, and **F1** lists every key on one page. Nothing is ever
