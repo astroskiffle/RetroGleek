@@ -64,7 +64,7 @@ result must match the SHA-256 listed on the release; if it doesn't, don't run th
    mask, TV signal), **O** turns the effects off and on, and **Shift+O** shows the picture with and without them side
    by side.
 ![The details list with platform, dimensions, colours, ratings and labels](images/bugs_daffy.png)
-**LEFT:**  How a modern PC renders the image  |  **RIGHT:** The same image rendered through smart shaders on RetroGleek 
+**LEFT:**  How a modern PC renders the image  |  **RIGHT:** Same image rendered through smart shaders on RetroGleek 
    
 6. 🕹️ **A photo on an 8-bit computer.** Open any photo and press **Shift+O**: the right side shows it as it might look on
    a ZX Spectrum, C64, Amstrad CPC or MSX. **Q** changes the computer, **D** the dithering, **Shift+F** fills the
